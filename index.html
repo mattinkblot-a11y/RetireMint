@@ -1,0 +1,2709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>RetireMint</title>
+<meta name="robots" content="noindex, nofollow" />
+<link rel="manifest" href="manifest.webmanifest" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="RetireMint" />
+<meta name="theme-color" content="#F2F0EB" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+<style>
+  html, body { margin:0; padding:0; background:#F2F0EB; overscroll-behavior:none; }
+  #boot { font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+          color:#8A919E; font-size:14px; padding:40px; }
+  input, select, button, textarea { font-size:16px; }
+  * { -webkit-tap-highlight-color: transparent; }
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/prop-types@15/prop-types.min.js"></script>
+<script crossorigin src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+</head>
+<body>
+<div id="root"><div id="boot">Loading\u2026</div></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+const RC = typeof Recharts !== "undefined" ? Recharts : null;
+const NoChart = () => null;
+const ComposedChart = RC ? RC.ComposedChart : NoChart;
+const Line = RC ? RC.Line : NoChart;
+const XAxis = RC ? RC.XAxis : NoChart;
+const YAxis = RC ? RC.YAxis : NoChart;
+const CartesianGrid = RC ? RC.CartesianGrid : NoChart;
+const Tooltip = RC ? RC.Tooltip : NoChart;
+const ResponsiveContainer = RC ? RC.ResponsiveContainer : NoChart;
+const ReferenceLine = RC ? RC.ReferenceLine : NoChart;
+const Legend = RC ? RC.Legend : NoChart;
+const Area = RC ? RC.Area : NoChart;
+
+
+/* ============================================================
+   Retirement Decision Desk
+   ============================================================ */
+
+const KEY = "retireplan:v1";
+const CY = new Date().getFullYear();
+const CM = new Date().getMonth() + 1;   // 1-12, for mortgage maturity maths
+
+/* ---------- helpers ---------- */
+const n = (v, d = 0) => {
+  const x = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, ""));
+  return isFinite(x) ? x : d;
+};
+const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+const uid = () => Math.random().toString(36).slice(2, 9);
+
+const money = (v) => {
+  if (v == null || !isFinite(v)) return "—";
+  const s = v < 0 ? "\u2212" : "";
+  return s + "$" + Math.round(Math.abs(v)).toLocaleString();
+};
+const moneyShort = (v) => {
+  if (v == null || !isFinite(v)) return "—";
+  const a = Math.abs(v), s = v < 0 ? "\u2212" : "";
+  if (a >= 1e9) return s + "$" + (a / 1e9).toFixed(2) + "B";
+  if (a >= 1e6) return s + "$" + (a / 1e6).toFixed(a >= 1e7 ? 1 : 2) + "M";
+  if (a >= 1e3) return s + "$" + Math.round(a / 1e3) + "k";
+  return s + "$" + Math.round(a);
+};
+const pct = (v, d = 1) => (v == null || !isFinite(v) ? "—" : (v * 100).toFixed(d) + "%");
+
+/* ---------- Social Security constants (2025 basis, today's dollars) ---------- */
+const SS_DEFAULTS = { taxableMax: 176100, bend1: 1226, bend2: 7391, fra: 67 };
+
+/* ---------- Historical market data: [year, S&P 500 total return %, CPI %] ----------
+   Total returns include reinvested dividends. Figures are rounded to one decimal and
+   sourced from standard published series; treat them as close, not audited. */
+const HIST = [
+  [1928, 43.8, -1.7], [1929, -8.3, 0.0], [1930, -25.1, -2.3], [1931, -43.8, -9.0],
+  [1932, -8.6, -9.9], [1933, 50.0, -5.1], [1934, -1.2, 3.1], [1935, 46.7, 2.2],
+  [1936, 31.9, 1.5], [1937, -35.3, 3.6], [1938, 29.3, -2.1], [1939, -1.1, -1.4],
+  [1940, -10.7, 0.7], [1941, -12.8, 5.0], [1942, 19.2, 10.9], [1943, 25.1, 6.1],
+  [1944, 19.0, 1.7], [1945, 35.8, 2.3], [1946, -8.4, 8.3], [1947, 5.2, 14.4],
+  [1948, 5.7, 8.1], [1949, 18.3, -1.2], [1950, 30.8, 1.3], [1951, 23.7, 7.9],
+  [1952, 18.2, 1.9], [1953, -1.2, 0.8], [1954, 52.6, 0.7], [1955, 32.6, -0.4],
+  [1956, 7.4, 1.5], [1957, -10.5, 3.3], [1958, 43.7, 2.8], [1959, 12.1, 0.7],
+  [1960, 0.3, 1.7], [1961, 26.6, 1.0], [1962, -8.8, 1.0], [1963, 22.6, 1.3],
+  [1964, 16.4, 1.3], [1965, 12.4, 1.6], [1966, -10.0, 2.9], [1967, 23.8, 3.1],
+  [1968, 10.8, 4.2], [1969, -8.2, 5.5], [1970, 3.6, 5.7], [1971, 14.2, 4.4],
+  [1972, 18.8, 3.2], [1973, -14.3, 6.2], [1974, -25.9, 11.0], [1975, 37.0, 9.1],
+  [1976, 23.8, 5.8], [1977, -7.0, 6.5], [1978, 6.5, 7.6], [1979, 18.5, 11.3],
+  [1980, 31.7, 13.5], [1981, -4.7, 10.3], [1982, 20.4, 6.2], [1983, 22.3, 3.2],
+  [1984, 6.2, 4.3], [1985, 31.2, 3.6], [1986, 18.5, 1.9], [1987, 5.8, 3.6],
+  [1988, 16.5, 4.1], [1989, 31.5, 4.8], [1990, -3.1, 5.4], [1991, 30.2, 4.2],
+  [1992, 7.5, 3.0], [1993, 10.0, 3.0], [1994, 1.3, 2.6], [1995, 37.2, 2.8],
+  [1996, 22.7, 3.0], [1997, 33.1, 2.3], [1998, 28.3, 1.6], [1999, 20.9, 2.2],
+  [2000, -9.0, 3.4], [2001, -11.9, 2.8], [2002, -22.0, 1.6], [2003, 28.4, 2.3],
+  [2004, 10.7, 2.7], [2005, 4.8, 3.4], [2006, 15.6, 3.2], [2007, 5.5, 2.8],
+  [2008, -36.6, 3.8], [2009, 26.0, -0.4], [2010, 15.1, 1.6], [2011, 2.1, 3.2],
+  [2012, 16.0, 2.1], [2013, 32.4, 1.5], [2014, 13.7, 1.6], [2015, 1.4, 0.1],
+  [2016, 12.0, 1.3], [2017, 21.8, 2.1], [2018, -4.4, 2.4], [2019, 31.5, 1.8],
+  [2020, 18.4, 1.2], [2021, 28.7, 4.7], [2022, -18.1, 8.0], [2023, 26.3, 4.1],
+  [2024, 25.0, 2.9], [2025, 17.9, 2.7],
+];
+const HIST0 = HIST[0][0];
+const HISTN = HIST.length;
+const SEQ_LEN = 36;
+
+/* Notable sequences worth calling out by name when they turn up as worst cases. */
+const ERA = (y) =>
+  y <= 1932 ? "Crash and Depression" :
+  y <= 1939 ? "Depression recovery" :
+  y <= 1948 ? "War and post-war inflation" :
+  y <= 1965 ? "Post-war bull market" :
+  y <= 1974 ? "Stagflation onset" :
+  y <= 1982 ? "The long 1970s bear" :
+  y <= 1999 ? "The great bull market" :
+  y <= 2002 ? "Dot-com bust" :
+  y <= 2009 ? "Financial crisis" : "Post-crisis era";
+
+
+
+/* Rows supplied from the completed input sheet; padded out to 10 blank slots. */
+const pad = (list, make, blank) => {
+  const rows = list.map(make);
+  while (rows.length < 10) rows.push({ id: uid(), ...blank });
+  return rows;
+};
+const vestingRows = (list) =>
+  pad(list, ([label, amount, year, prob]) => ({ id: uid(), label, amount, year, prob }),
+      { label: "", amount: "", year: "", prob: 100 });
+const oneOffRows = (list) =>
+  pad(list, ([label, amount, age]) => ({ id: uid(), label, amount, age }),
+      { label: "", amount: "", age: "" });
+
+const DEFAULT_PROFILE = {
+  name: "",
+  currentAge: 45,
+  dependents: 2,
+  salary: 200000,
+  bonus: 50000,
+  raise: 0.03,
+  roth: 100000,
+  ira: 150000,
+  k401: 400000,
+  funds: 200000,
+  vestedEquity: 0,
+  cash: 60000,
+  cashReserve: 25000,
+  vestedCarry: 0,
+  unvestedEquity: 0,
+  unvestedCarry: 0,
+  homeValue: 800000,
+  mortgageBalance: 400000,
+  mortgageRate: 0.055,
+  mortgagePayment: 3000,
+  mortgageMaturityMonth: 12,
+  mortgageMaturityYear: CY + 25,
+  fiveTwoNine: 50000,
+  vesting: vestingRows([]),
+};
+
+const DEFAULT_ASSUMPTIONS = {
+  assetsOverride: "",
+  homeEquityOverride: "",
+  preReturn: 0.07,
+  postReturn: 0.05,
+  inflation: 0.025,
+  effectiveTaxRate: 0.15,
+  spendBasis: "gross",
+  annualContribution: 40000,
+  contributionGrowth: 0.03,
+  retirementAge: 65,
+  deathAge: 95,
+  legacyGoal: 1000000,
+  waitForFRA: true,
+  claimAge: 62,
+  fra: 67,
+  ssTaxablePortion: 0.85,
+  taxableMax: SS_DEFAULTS.taxableMax,
+  ssFirstYear: CY - 25,
+  budgetA: { amount: 150000, years: 15 },
+  budgetB: { amount: 120000, years: 15 },
+  homeAppreciation: 0.03,
+  homeValueCap: "",
+  sellHomeAge: "",
+  homeReleasePct: 0.85,
+  mortgageInSpend: "included",
+  baseYear: CY,
+  vestingToPortfolio: 0,
+  extras: Array.from({ length: 6 }, () => ({ id: uid(), label: "", amount: "", year: "", dest: "portfolio" })),
+  oneOffs: oneOffRows([]),
+};
+
+const DEFAULT_ACTUALS = {};
+
+const DEFAULT_STATE = {
+  version: 1,
+  profile: DEFAULT_PROFILE,
+  assumptions: DEFAULT_ASSUMPTIONS,
+  actuals: DEFAULT_ACTUALS,
+  scenarios: [],
+  ledger: [],
+  annual: { year: CY, sheets: {} },
+  notes: { goals: "", log: "" },
+  whatif: { a: { k: "", v: null }, b: { k: "", v: null } },
+  stress: { equityShare: 0.90, otherReal: 0.02, mode: "real", window: "last70", anchorView: 0,
+    steps: [
+      { id: "g1", age: 54, pct: 0.75 },
+      { id: "g2", age: 64, pct: 0.60 },
+      { id: "g3", age: 74, pct: 0.45 },
+      { id: "g4", age: 84, pct: 0.35 },
+    ] },
+  ui: { display: "real" },
+};
+
+/* ============================================================
+   Social Security estimate
+   ============================================================ */
+
+function computeSS(profile, a) {
+  const max = n(a.taxableMax, SS_DEFAULTS.taxableMax) || SS_DEFAULTS.taxableMax;
+  const first = n(a.ssFirstYear, CY - 20);
+  const age0 = n(profile.currentAge, 40);
+  const retAge = n(a.retirementAge, 65);
+
+  // Every year of earnings is assumed to reach the taxable maximum, past and future.
+  const pastYears = Math.max(0, CY - first);
+  const futureYears = Math.max(0, retAge - age0);
+  const totalYears = pastYears + futureYears;
+  const credited = Math.min(35, totalYears);
+
+  const aime = (credited * max) / 420;
+
+  const b1 = SS_DEFAULTS.bend1, b2 = SS_DEFAULTS.bend2;
+  const pia =
+    0.9 * Math.min(aime, b1) +
+    0.32 * Math.max(0, Math.min(aime, b2) - b1) +
+    0.15 * Math.max(0, aime - b2);
+
+  const fra = n(a.fra, 67);
+  const claimAge = a.waitForFRA ? fra : clamp(n(a.claimAge, 62), 62, 70);
+  const months = Math.round((claimAge - fra) * 12);
+  let factor = 1;
+  if (months < 0) {
+    const early = -months;
+    const first36 = Math.min(early, 36);
+    const rest = Math.max(0, early - 36);
+    factor = 1 - (first36 * 5) / 900 - (rest * 5) / 1200;
+  } else if (months > 0) {
+    factor = 1 + Math.min(months, 36) * (2 / 300);
+  }
+
+  return {
+    aime,
+    piaMonthly: pia,
+    claimAge,
+    factor,
+    monthlyAtClaim: pia * factor,
+    annualAtClaim: pia * factor * 12,
+    yearsCredited: totalYears,
+    creditedUsed: credited,
+    pastYears, futureYears,
+  };
+}
+
+/* ---------- mortgage amortisation ----------
+   Annual schedule. Extra payments hit principal at the start of the year, before
+   interest accrues. One entry per year from startYear. */
+function amortize(balance, annualRate, monthlyPay, extrasByYearMap, startYear, years, firstYearMonths) {
+  const r = annualRate / 12;
+  const sched = [];
+  let bal = Math.max(0, balance);
+  let totalInterest = 0, payoffOffset = null;
+  for (let i = 0; i < years; i++) {
+    const year = startYear + i;
+    const open = bal;
+    const extra = bal > 0 ? Math.min(bal, extrasByYearMap[year] || 0) : 0;
+    bal -= extra;
+    let interest = 0, principal = 0;
+    const months = i === 0 ? (firstYearMonths == null ? 12 : firstYearMonths) : 12;
+    for (let m = 0; m < months && bal > 0; m++) {
+      const int = bal * r;
+      const pay = Math.min(monthlyPay, bal + int);
+      const prin = Math.max(0, pay - int);
+      bal = Math.max(0, bal - prin);
+      interest += int; principal += prin;
+    }
+    totalInterest += interest;
+    if (bal <= 0 && payoffOffset === null && open > 0) payoffOffset = i;
+    sched.push({ year, open, extra, interest, principal, balance: bal });
+  }
+  return { sched, totalInterest, payoffOffset, neverPaysOff: bal > 0 };
+}
+
+/* Level monthly payment that clears a balance exactly at maturity. */
+function levelPaymentMonths(balance, annualRate, months) {
+  const r = annualRate / 12;
+  if (!(balance > 0 && months > 0)) return 0;
+  return r > 0 ? (balance * r) / (1 - Math.pow(1 + r, -months)) : balance / months;
+}
+
+function extrasByYear(list, dest) {
+  const m = {};
+  (list || []).forEach((e) => {
+    if (e.dest !== dest) return;
+    const y = n(e.year, 0);
+    if (!y) return;
+    m[y] = (m[y] || 0) + n(e.amount);
+  });
+  return m;
+}
+
+/* ============================================================
+   Balance sheet
+   ============================================================ */
+
+function balanceSheet(p) {
+  const deferred = n(p.ira) + n(p.k401);
+  const roth = n(p.roth);
+  const hsa = n(p.hsa);
+  const usableCash = Math.max(0, n(p.cash) - n(p.cashReserve));
+  const taxable = n(p.funds) + n(p.vestedEquity) + n(p.vestedCarry) + usableCash;
+  const retirementAccts = deferred + roth + hsa;
+  const investable = retirementAccts + taxable;
+  const homeEquity = n(p.homeValue) - n(p.mortgageBalance);
+  const netWorth = investable + n(p.cashReserve) + homeEquity + n(p.fiveTwoNine);
+  return { deferred, roth, hsa, taxable, usableCash, retirementAccts, investable, homeEquity, netWorth };
+}
+
+/* ============================================================
+   Projection engine
+   ============================================================ */
+
+/* Withdraw `need` of spendable cash, walking the buckets in the order that costs
+   least tax: taxable first (only the gain is taxed), then tax-deferred (ordinary
+   income), then HSA and Roth last because they come out clean and are worth
+   keeping. Returns the gross amount removed and the tax it carried. */
+function drawByAccount(B, basis, need, ordRate, cgRate) {
+  let left = need, gross = 0, tax = 0;
+
+  if (left > 0 && B.taxable > 0) {
+    const before = B.taxable;
+    const gainFrac = before > 0 ? Math.max(0, before - basis.v) / before : 0;
+    const eff = gainFrac * cgRate;                 // blended rate on a taxable sale
+    const wanted = eff < 1 ? left / (1 - eff) : before;
+    const take = Math.min(before, wanted);
+    const net = take * (1 - eff);
+    basis.v *= before > 0 ? 1 - take / before : 0; // basis leaves pro rata
+    B.taxable = before - take;
+    left -= net; gross += take; tax += take - net;
+  }
+
+  if (left > 0 && B.deferred > 0) {
+    const wanted = ordRate < 1 ? left / (1 - ordRate) : B.deferred;
+    const take = Math.min(B.deferred, wanted);
+    const net = take * (1 - ordRate);
+    B.deferred -= take;
+    left -= net; gross += take; tax += take - net;
+  }
+
+  for (const k of ["hsa", "roth"]) {
+    if (left > 0 && B[k] > 0) {
+      const take = Math.min(B[k], left);
+      B[k] -= take; left -= take; gross += take;
+    }
+  }
+
+  return { gross, tax, shortfall: Math.max(0, left) };
+}
+
+/* Pro-rata withdrawal used by the simple single-rate mode. */
+function drawPooled(B, basis, gross) {
+  const total = B.roth + B.deferred + B.taxable + B.hsa;
+  if (total <= 0) return { gross: 0, shortfall: gross };
+  const take = Math.min(total, gross);
+  const f = take / total;
+  const beforeTaxable = B.taxable;
+  B.roth -= B.roth * f; B.deferred -= B.deferred * f;
+  B.taxable -= B.taxable * f; B.hsa -= B.hsa * f;
+  if (beforeTaxable > 0) basis.v *= 1 - f;
+  return { gross: take, shortfall: Math.max(0, gross - take) };
+}
+
+function project(profile, a, opts = {}) {
+  const seq = opts.returns || null;
+  const bs = balanceSheet(profile);
+  const age0 = n(profile.currentAge, 40);
+  const deathAge = Math.max(age0 + 1, n(a.deathAge, 92));
+  const retAge = clamp(n(a.retirementAge, 65), age0, deathAge);
+  const infl = n(a.inflation, 0.025);
+  const preR = n(a.preReturn, 0.07);
+  const postR = n(a.postReturn, 0.05);
+  const blended = clamp(n(a.effectiveTaxRate, 0), 0, 0.6);
+  const ordRate = clamp(n(a.ordinaryTaxRate, 0.22), 0, 0.7);
+  const cgRate = clamp(n(a.capGainsRate, 0.15), 0, 0.5);
+  const byAccount = a.taxMode === "byAccount";
+  const spendIsGross = a.spendBasis !== "net";
+  const ss = computeSS(profile, a);
+  const ssTaxable = clamp(n(a.ssTaxablePortion, 0.85), 0, 1);
+  const ssCola = a.ssCola !== false;          // benefits rise with inflation once claimed
+  const spendInflates = a.spendInflates !== false;  // budgets rise with inflation
+
+  /* --- opening buckets, scaled if an override total is set --- */
+  const B = { roth: bs.roth, deferred: bs.deferred, taxable: bs.taxable, hsa: bs.hsa };
+  if (a.assetsOverride !== "" && a.assetsOverride != null) {
+    const want = n(a.assetsOverride), have = bs.investable;
+    const f = have > 0 ? want / have : 0;
+    if (have > 0) { B.roth *= f; B.deferred *= f; B.taxable *= f; B.hsa *= f; }
+    else B.taxable = want;
+  }
+  const basis = { v: B.taxable * clamp(n(a.taxableBasisShare, 0.7), 0, 1) };
+
+  /* --- contribution split; whatever is left of 100% lands in taxable --- */
+  const splitDef = clamp(n(a.contribToDeferred, 0.5), 0, 1);
+  const splitRoth = clamp(n(a.contribToRoth, 0.15), 0, 1);
+  const splitHsa = clamp(n(a.contribToHSA, 0.05), 0, 1);
+  const splitTax = Math.max(0, 1 - splitDef - splitRoth - splitHsa);
+
+  /* --- mortgage --- */
+  const years = deathAge - age0 + 1;
+  const mortRate = n(profile.mortgageRate, 0);
+  const mortStart = n(profile.mortgageBalance, 0);
+  const matYear = n(profile.mortgageMaturityYear, 0);
+  const matMonth = clamp(n(profile.mortgageMaturityMonth, 12), 1, 12);
+  const mortMonths = matYear > 0 ? Math.max(0, (matYear - CY) * 12 + (matMonth - CM)) : 0;
+  const firstYearMonths = Math.max(0, 12 - CM);
+  const byMaturity = a.mortgageDriver !== "payment";
+  const mortMonthly = (byMaturity && mortMonths > 0 && mortStart > 0)
+    ? levelPaymentMonths(mortStart, mortRate, mortMonths)
+    : n(profile.mortgagePayment, 0);
+  const mortPay = mortMonthly * 12;
+  const withExtraMap = extrasByYear(a.extras, "mortgage");
+  const mortgageInSpend = a.mortgageInSpend === "added";
+  const withExtra = amortize(mortStart, mortRate, mortMonthly, withExtraMap, CY, years, firstYearMonths);
+  const noExtra = amortize(mortStart, mortRate, mortMonthly, {}, CY, years, firstYearMonths);
+  let homeVal = (a.homeEquityOverride !== "" && a.homeEquityOverride != null)
+    ? n(a.homeEquityOverride) + mortStart
+    : n(profile.homeValue, 0);
+  const portfolioExtras = extrasByYear(a.extras, "portfolio");
+
+  /* --- contribution step-down --- */
+  const stepOn = !!a.contribStepDown;
+  const stepYear = n(a.contribStepYear, 0);
+  const stepTo = n(a.contribStepTo, 0);
+
+  let homeSold = false;
+  const rows = [];
+  let depletionAge = null, peak = 0;
+  let cumSS = 0, cumSSNet = 0, cumDraw = 0, cumDrawNoSS = 0, cumContrib = 0,
+      cumShort = 0, cumNeed = 0, cumCovered = 0, cumTax = 0, cumVest = 0, cumInflow = 0;
+
+  for (let age = age0; age <= deathAge; age++) {
+    const t = age - age0;
+    const year = CY + t;
+    const inf = Math.pow(1 + infl, t);
+    const retired = age >= retAge;
+    let r = seq && seq[age] != null ? seq[age] : (retired ? postR : preR);
+    const feeOn = a.advisorFeeFrom !== "" && a.advisorFeeFrom != null && year >= n(a.advisorFeeFrom);
+    const feeRate = feeOn ? clamp(n(a.advisorFee, 0), 0, 0.1) : 0;
+    r = r - feeRate;                       // charged on the balance, so it comes off the return
+    const boy = B.roth + B.deferred + B.taxable + B.hsa;
+    const mort = withExtra.sched[t] || { balance: 0, interest: 0, extra: 0, principal: 0 };
+
+    /* ---- contributions ---- */
+    let contrib = 0;
+    if (!retired) {
+      if (stepOn && stepYear > 0 && year >= stepYear) {
+        // flat from the step-down year onward, in today's dollars
+        contrib = stepTo;
+      } else {
+        contrib = n(a.annualContribution) * Math.pow(1 + n(a.contributionGrowth), t);
+      }
+    }
+
+    /* ---- vesting equities: land at the start of the year, at their own share ---- */
+    let vestGross = 0, vest = 0;
+    (profile.vesting || []).forEach((v) => {
+      if (n(v.year, -1) === year) {
+        const amt = n(v.amount);
+        vestGross += amt;
+        vest += amt * clamp(n(v.prob, 100) / 100, 0, 1);
+      }
+    });
+
+    /* ---- one-off cash inflows: same shape, own contributed share ---- */
+    let inflowGross = 0, inflowIn = 0;
+    (a.cashInflows || []).forEach((c) => {
+      if (n(c.year, -1) === year) {
+        const amt = n(c.amount);
+        inflowGross += amt;
+        inflowIn += amt * clamp(n(c.pct, 100) / 100, 0, 1);
+      }
+    });
+
+    /* ---- house sale ---- */
+    let homeProceeds = 0;
+    if (!homeSold && a.sellHomeAge !== "" && a.sellHomeAge != null && age === n(a.sellHomeAge)) {
+      homeProceeds = Math.max(0, homeVal - mort.balance) * clamp(n(a.homeReleasePct, 0.85), 0, 1);
+      homeSold = true;
+    }
+    const extraIn = portfolioExtras[year] || 0;
+
+    /* Vesting arrives at the start of the year, so it earns a full year of return.
+       Everything else is treated as arriving through the year. */
+    const boyIn = vest;
+    const midIn = contrib + inflowIn + extraIn + homeProceeds;
+
+    B.taxable += boyIn;                          // shares and cash land taxable
+    basis.v += boyIn;                            // and arrive at full basis
+    B.deferred += contrib * splitDef;
+    B.roth += contrib * splitRoth;
+    B.hsa += contrib * splitHsa;
+    B.taxable += contrib * splitTax + inflowIn + extraIn + homeProceeds;
+    basis.v += contrib * splitTax + inflowIn + extraIn + homeProceeds;
+
+    /* ---- spending ---- */
+    let spend = 0, mortSpend = 0;
+    if (retired) {
+      const yi = age - retAge;
+      const yearsA = n(a.budgetA.years, 0);
+      const baseAmt = yi < yearsA ? n(a.budgetA.amount) : n(a.budgetB.amount);
+      spend = baseAmt * (spendInflates ? inf : 1);
+      if (mortgageInSpend && !homeSold) {
+        mortSpend = mort.interest + mort.principal;   // fixed nominal, never inflates
+        spend += mortSpend;
+      }
+    }
+    let oneOff = 0;
+    (a.oneOffs || []).forEach((o) => {
+      if (o.age !== "" && n(o.age, -1) === age) oneOff += n(o.amount) * (spendInflates ? inf : 1);
+    });
+
+    /* ---- Social Security ---- */
+    const ssGross = age >= ss.claimAge ? ss.annualAtClaim * (ssCola ? inf : 1) : 0;
+    const ssApplied = byAccount
+      ? ssGross * (1 - ordRate * ssTaxable)
+      : (spendIsGross ? ssGross : ssGross * (1 - blended * ssTaxable));
+
+    const need = spend + oneOff;
+    const coveredBySS = Math.min(need, ssApplied);
+    const surplusSS = ssApplied - coveredBySS;
+    const netNeed = Math.max(0, need - ssApplied);
+
+    if (surplusSS > 0) { B.taxable += surplusSS; basis.v += surplusSS; }
+
+    /* ---- withdrawal ---- */
+    let grossDraw = 0, taxPaid = 0, shortfall = 0, drawNoSS = 0;
+    if (byAccount) {
+      const res = drawByAccount(B, basis, netNeed, ordRate, cgRate);
+      grossDraw = res.gross; taxPaid = res.tax; shortfall = res.shortfall;
+      drawNoSS = need;
+    } else {
+      const want = netNeed > 0 ? (spendIsGross ? netNeed : netNeed / (1 - blended)) : 0;
+      const res = drawPooled(B, basis, want);
+      grossDraw = res.gross; shortfall = res.shortfall;
+      taxPaid = spendIsGross ? 0 : grossDraw * blended;
+      drawNoSS = need > 0 ? (spendIsGross ? need : need / (1 - blended)) : 0;
+    }
+    if (shortfall > 0 && depletionAge === null) depletionAge = age;
+    cumShort += shortfall;
+
+    /* ---- growth ---- */
+    const preGrowth = B.roth + B.deferred + B.taxable + B.hsa;
+    const gBoy = 1 + r;
+    const gMid = Math.sqrt(Math.max(0.2, 1 + r));
+    // Opening balance and start-of-year money earn the full year; the rest half.
+    const openPart = Math.max(0, boy + boyIn - 0);
+    const flowPart = preGrowth - openPart;
+    const grown = openPart * gBoy + flowPart * gMid;
+    const factor = preGrowth > 0 ? grown / preGrowth : 1;
+    B.roth *= factor; B.deferred *= factor; B.taxable *= factor; B.hsa *= factor;
+    // Growth inside the taxable bucket is unrealised gain, so basis stays put.
+
+    const eoy = Math.max(0, B.roth + B.deferred + B.taxable + B.hsa);
+    if (basis.v > B.taxable) basis.v = B.taxable;
+
+    if (!homeSold) {
+      homeVal = homeVal * (1 + n(a.homeAppreciation, 0));
+      if (a.homeValueCap !== "" && a.homeValueCap != null) homeVal = Math.min(homeVal, n(a.homeValueCap));
+    }
+    const homeEq = homeSold ? 0 : Math.max(0, homeVal - mort.balance);
+
+    cumSS += ssGross; cumSSNet += ssApplied; cumNeed += need; cumCovered += coveredBySS;
+    cumDraw += grossDraw; cumDrawNoSS += drawNoSS; cumContrib += contrib; cumTax += taxPaid;
+    cumVest += vest; cumInflow += inflowIn;
+    peak = Math.max(peak, eoy);
+
+    rows.push({
+      year, age, t, inf, retired,
+      boy, contrib, vest, vestGross, inflowIn, inflowGross, extraIn, homeProceeds,
+      inflows: boyIn + midIn + surplusSS,
+      growth: eoy - preGrowth,
+      spend, oneOff, need, mortSpend,
+      ss: ssGross, ssNet: ssApplied, coveredBySS, netNeed,
+      taxDrag: taxPaid, grossDraw, drawNoSS, shortfall, eoy,
+      advisorFee: feeRate > 0 ? (boy + boyIn) * feeRate : 0,
+      roth: B.roth, deferred: B.deferred, taxable: B.taxable, hsa: B.hsa, basis: basis.v,
+      mortBalance: homeSold ? 0 : mort.balance,
+      mortInterest: mort.interest, mortExtra: mort.extra,
+      homeVal: homeSold ? 0 : homeVal, homeEq,
+      estate: eoy + homeEq,
+    });
+  }
+
+  const last = rows[rows.length - 1] || {};
+  const retRow = rows.find((r) => r.age === retAge);
+  const goalYear = n(a.legacyGoalYear, CY);
+  const deathYear = CY + (deathAge - age0);
+  const goalNominal = n(a.legacyGoal) * Math.pow(1 + infl, deathYear - goalYear);
+  const firstDrawRow = rows.find((r) => r.retired && r.grossDraw > 0);
+  const withdrawalRate = firstDrawRow && firstDrawRow.boy > 0 ? firstDrawRow.grossDraw / firstDrawRow.boy : 0;
+  const realPostReturn = (1 + postR) / (1 + infl) - 1;
+  const realPreReturn = (1 + preR) / (1 + infl) - 1;
+  const breakEvenAge = (() => {
+    const r = rows.find((x) => x.retired && x.eoy > x.boy && x.grossDraw > 0);
+    return r ? r.age : null;
+  })();
+  const budgetAAge = retAge;
+  const budgetBAge = retAge + n(a.budgetA.years, 0);
+  const bRowA = rows.find((r) => r.age === budgetAAge);
+  const bRowB = rows.find((r) => r.age === budgetBAge);
+
+  return {
+    rows, ss, bs, depletionAge, peak, retAge, deathAge, age0, infl,
+    startingAssets: rows[0] ? rows[0].boy : 0,
+    portfolioAtRetirement: retRow ? retRow.boy : 0,
+    terminalPortfolio: last.eoy || 0,
+    terminalEstate: last.estate || 0,
+    goalNominal, goalYear, deathYear,
+    legacyGap: (last.estate || 0) - goalNominal,
+    cumSS, cumSSNet, cumDraw, cumDrawNoSS, cumContrib, cumShort, cumNeed, cumCovered,
+    cumTax, cumVest, cumInflow,
+    ssCoverage: cumNeed > 0 ? cumCovered / cumNeed : 0,
+    drawSavedBySS: cumDrawNoSS - cumDraw,
+    withdrawalRate, realPostReturn, realPreReturn, breakEvenAge,
+    spendIsGross, byAccount, ssCola, spendInflates,
+    advisorFeeOn: a.advisorFeeFrom !== "" && a.advisorFeeFrom != null && n(a.advisorFee, 0) > 0,
+    advisorFeeFrom: n(a.advisorFeeFrom, 0), advisorFeeRate: n(a.advisorFee, 0),
+    cumAdvisorFee: rows.reduce((s2, x) => s2 + (x.advisorFee || 0), 0),
+    budgetARate: bRowA && bRowA.boy > 0 ? (n(a.budgetA.amount) * bRowA.inf) / bRowA.boy : null,
+    budgetBRate: bRowB && bRowB.boy > 0 ? (n(a.budgetB.amount) * bRowB.inf) / bRowB.boy : null,
+    budgetADraw: bRowA && bRowA.boy > 0 ? bRowA.grossDraw / bRowA.boy : null,
+    budgetBDraw: bRowB && bRowB.boy > 0 ? bRowB.grossDraw / bRowB.boy : null,
+    budgetAAge, budgetBAge,
+    portfolioAtBudgetA: bRowA ? bRowA.boy : 0,
+    portfolioAtBudgetB: bRowB ? bRowB.boy : 0,
+    mortgageInSpend,
+    mortRetirementYears: withExtra.payoffOffset != null
+      ? Math.max(0, (age0 + withExtra.payoffOffset) - retAge + 1) : Math.max(0, deathAge - retAge + 1),
+    mortRetirementDraw: rows.reduce((s2, r) => s2 + (r.retired ? r.mortSpend : 0), 0),
+    mortPayoffAge: withExtra.payoffOffset != null ? age0 + withExtra.payoffOffset : null,
+    mortPayoffAgeBase: noExtra.payoffOffset != null ? age0 + noExtra.payoffOffset : null,
+    mortInterestTotal: withExtra.totalInterest,
+    mortInterestBase: noExtra.totalInterest,
+    interestSaved: noExtra.totalInterest - withExtra.totalInterest,
+    annualMortgagePayment: mortPay, monthlyMortgagePayment: mortMonthly, byMaturity,
+    mortMonths, matYear, matMonth,
+    vestScheduled: rows.reduce((s2, r) => s2 + r.vestGross, 0),
+    vestDirected: cumVest,
+    inflowScheduled: rows.reduce((s2, r) => s2 + r.inflowGross, 0),
+    inflowDirected: cumInflow,
+    extraToPortfolio: rows.reduce((s2, r) => s2 + r.extraIn, 0),
+    extraToMortgage: rows.reduce((s2, r) => s2 + r.mortExtra, 0),
+  };
+}
+
+/* ============================================================
+   Sequence-of-returns stress test
+   ============================================================ */
+
+/* Equity share at a given age, after applying any step-downs that have taken effect.
+   Steps are read in age order, so the last one reached wins. */
+function equityAt(age, cfg) {
+  let e = clamp(n(cfg.equityShare, 0.9), 0, 1);
+  const steps = (cfg.steps || [])
+    .filter((x) => x.age !== "" && x.age != null && n(x.age) > 0)
+    .slice()
+    .sort((a, b) => n(a.age) - n(b.age));
+  steps.forEach((x) => { if (age >= n(x.age)) e = clamp(n(x.pct), 0, 1); });
+  return e;
+}
+
+function buildReturnMap(a, cfg, startIdx, anchorAge) {
+  const infl = n(a.inflation, 0.025);
+  const other = n(cfg.otherReal, 0.02);
+  const nominalMode = cfg.mode === "nominal";
+  const otherNominal = (1 + other) * (1 + infl) - 1;
+  const map = {};
+  for (let i = 0; i < SEQ_LEN; i++) {
+    const h = HIST[(startIdx + i) % HISTN];
+    const age = anchorAge + i;
+    const eq = equityAt(age, cfg);
+    const nom = h[1] / 100, cpi = h[2] / 100;
+    if (nominalMode) {
+      map[age] = eq * nom + (1 - eq) * otherNominal;
+    } else {
+      const realEq = (1 + nom) / (1 + cpi) - 1;
+      const blendReal = eq * realEq + (1 - eq) * other;
+      map[age] = (1 + blendReal) * (1 + infl) - 1;
+    }
+  }
+  return map;
+}
+
+function stressTest(profile, a, cfg) {
+  const infl = n(a.inflation, 0.025);
+  const age0 = n(profile.currentAge, 40);
+  const deathAge = Math.max(age0 + 1, n(a.deathAge, 92));
+  const retAge = clamp(n(a.retirementAge, 65), age0, deathAge);
+
+  const startYears = cfg.window === "complete"
+    ? HIST.filter((h) => h[0] + SEQ_LEN - 1 <= HIST[HISTN - 1][0]).map((h) => h[0])
+    : HIST.slice(Math.max(0, HISTN - 70)).map((h) => h[0]);
+
+  const runs = [];
+  startYears.forEach((sy) => {
+    const idx = sy - HIST0;
+    const wrapped = idx + SEQ_LEN > HISTN;
+    cfg.anchors.forEach((off) => {
+      const anchorAge = retAge + off;
+      const pr = project(profile, a, { returns: buildReturnMap(a, cfg, idx, anchorAge) });
+      runs.push({
+        startYear: sy, anchor: off, wrapped, era: ERA(sy),
+        depletionAge: pr.depletionAge,
+        terminal: pr.terminalPortfolio,
+        estate: pr.terminalEstate,
+        rows: pr.rows,
+      });
+    });
+  });
+  return { runs, startYears, retAge, deathAge, age0, infl };
+}
+
+function summarize(runs, anchor) {
+  const set = runs.filter((r) => r.anchor === anchor);
+  if (!set.length) return null;
+  const survived = set.filter((r) => r.depletionAge == null);
+  const failed = set.filter((r) => r.depletionAge != null);
+  const ests = set.map((r) => r.terminal).sort((x, y) => x - y);
+  const q = (p) => ests[clamp(Math.round(p * (ests.length - 1)), 0, ests.length - 1)];
+  const deps = failed.map((r) => r.depletionAge).sort((x, y) => x - y);
+  const worst = set.slice().sort((x, y) =>
+    (x.depletionAge ?? 999) - (y.depletionAge ?? 999) || x.terminal - y.terminal)[0];
+  const best = set.slice().sort((x, y) => y.terminal - x.terminal)[0];
+  return {
+    n: set.length,
+    survived: survived.length,
+    rate: survived.length / set.length,
+    p10: q(0.1), p50: q(0.5), p90: q(0.9),
+    worst, best,
+    earliestDep: deps.length ? deps[0] : null,
+    medianDep: deps.length ? deps[Math.floor(deps.length / 2)] : null,
+    latestDep: deps.length ? deps[deps.length - 1] : null,
+  };
+}
+
+function fanData(runs, anchor, ages, infl, age0) {
+  const set = runs.filter((r) => r.anchor === anchor);
+  return ages.map((age) => {
+    const vals = [];
+    set.forEach((r) => {
+      const row = r.rows.find((x) => x.age === age);
+      if (row) vals.push(row.eoy);
+    });
+    vals.sort((x, y) => x - y);
+    const q = (p) => (vals.length ? vals[clamp(Math.round(p * (vals.length - 1)), 0, vals.length - 1)] : 0);
+    return {
+      age,
+      band: [Math.round(q(0.1)), Math.round(q(0.9))],
+      median: Math.round(q(0.5)),
+      worst: Math.round(q(0)),
+    };
+  });
+}
+
+/* ---------- solvers ---------- */
+function solveContribution(profile, a) {
+  const f = (c) => project(profile, { ...a, annualContribution: c }).legacyGap;
+  if (f(0) >= 0) return 0;
+  let lo = 0, hi = 50000;
+  for (let i = 0; i < 40 && f(hi) < 0; i++) hi *= 1.6;
+  if (f(hi) < 0) return null;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (f(mid) < 0) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+function solveRetirementAge(profile, a) {
+  const start = n(profile.currentAge, 40), end = n(a.deathAge, 92) - 1;
+  for (let age = start; age <= end; age++) {
+    if (project(profile, { ...a, retirementAge: age }).legacyGap >= 0) return age;
+  }
+  return null;
+}
+function solveReturn(profile, a) {
+  const spread = n(a.preReturn) - n(a.postReturn);
+  const f = (r) => project(profile, { ...a, preReturn: r, postReturn: Math.max(0, r - spread) }).legacyGap;
+  if (f(0.20) < 0) return null;
+  if (f(0) >= 0) return 0;
+  let lo = 0, hi = 0.2;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (f(mid) < 0) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/* ============================================================
+   Storage
+   ============================================================ */
+/* Browser storage. Everything stays on this device, in this browser profile.
+   Nothing is uploaded anywhere and nothing is baked into this file. Clearing
+   site data will erase it, so use the Backup button now and then. */
+function loadState() {
+  try {
+    const v = window.localStorage.getItem(KEY);
+    return { ok: true, data: v ? JSON.parse(v) : null, error: null };
+  } catch (e) {
+    return { ok: false, data: null, error: (e && e.message) || "Storage blocked" };
+  }
+}
+
+function persist(state) {
+  try {
+    window.localStorage.setItem(KEY, JSON.stringify(state));
+    return { ok: true, error: null };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || "Storage blocked" };
+  }
+}
+
+/* ============================================================
+   Field registry — every value the levers can reach
+   ============================================================ */
+
+const pathGet = (obj, path) => path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
+const pathSet = (obj, path, val) => {
+  const keys = path.split(".");
+  const out = { ...obj };
+  let cur = out;
+  for (let i = 0; i < keys.length - 1; i++) {
+    cur[keys[i]] = { ...cur[keys[i]] };
+    cur = cur[keys[i]];
+  }
+  cur[keys[keys.length - 1]] = val;
+  return out;
+};
+
+const FIELDS = [
+  { k: "assumptions.preReturn", g: "Growth, inflation and tax", l: "Return before retirement", t: "pct" },
+  { k: "assumptions.postReturn", g: "Growth, inflation and tax", l: "Return after retirement", t: "pct" },
+  { k: "assumptions.inflation", g: "Growth, inflation and tax", l: "Inflation", t: "pct" },
+  { k: "assumptions.effectiveTaxRate", g: "Growth, inflation and tax", l: "Tax rate on withdrawals", t: "pct" },
+  { k: "assumptions.spendBasis", g: "Growth, inflation and tax", l: "Spending is stated", t: "choice",
+    opts: [["gross", "Gross of tax"], ["net", "Net of tax"]] },
+
+  { k: "assumptions.annualContribution", g: "Saving", l: "Annual contributions", t: "money" },
+  { k: "assumptions.contributionGrowth", g: "Saving", l: "Contributions grow by", t: "pct" },
+
+  { k: "assumptions.retirementAge", g: "Timing and legacy", l: "Retirement age", t: "num" },
+  { k: "assumptions.deathAge", g: "Timing and legacy", l: "Plan through age", t: "num" },
+  { k: "assumptions.legacyGoal", g: "Timing and legacy", l: "Leave to heirs", t: "money" },
+
+  { k: "assumptions.budgetA.amount", g: "Retirement spending", l: "First phase — annual spend", t: "money" },
+  { k: "assumptions.budgetA.years", g: "Retirement spending", l: "First phase — years", t: "num" },
+  { k: "assumptions.budgetB.amount", g: "Retirement spending", l: "Second phase — annual spend", t: "money" },
+  { k: "assumptions.budgetB.years", g: "Retirement spending", l: "Second phase — years", t: "num" },
+
+  { k: "assumptions.waitForFRA", g: "Social Security", l: "Wait for full retirement age", t: "choice",
+    opts: [[true, "Yes"], [false, "No"]] },
+  { k: "assumptions.claimAge", g: "Social Security", l: "Claim at age, if not waiting", t: "num" },
+  { k: "assumptions.fra", g: "Social Security", l: "Full retirement age", t: "num" },
+  { k: "assumptions.ssTaxablePortion", g: "Social Security", l: "Share of benefit taxable", t: "pct" },
+  { k: "assumptions.taxableMax", g: "Social Security", l: "Taxable wage cap", t: "money" },
+  { k: "assumptions.ssFirstYear", g: "Social Security", l: "First year you earned", t: "year" },
+
+  { k: "assumptions.taxMode", g: "Tax treatment", l: "How tax is modelled", t: "choice",
+    opts: [["simple", "One blended rate"], ["byAccount", "By account type"]] },
+  { k: "assumptions.ordinaryTaxRate", g: "Tax treatment", l: "Ordinary income rate", t: "pct" },
+  { k: "assumptions.capGainsRate", g: "Tax treatment", l: "Capital gains rate", t: "pct" },
+  { k: "assumptions.taxableBasisShare", g: "Tax treatment", l: "Cost basis share of taxable", t: "pct" },
+  { k: "assumptions.contribToDeferred", g: "Saving", l: "Contributions to 401(k)/IRA", t: "pct" },
+  { k: "assumptions.contribToRoth", g: "Saving", l: "Contributions to Roth", t: "pct" },
+  { k: "assumptions.contribToHSA", g: "Saving", l: "Contributions to HSA", t: "pct" },
+  { k: "assumptions.contribStepTo", g: "Saving", l: "Contributions step down to", t: "money" },
+  { k: "assumptions.contribStepYear", g: "Saving", l: "Step down starting in", t: "year" },
+  { k: "assumptions.ssCola", g: "Social Security", l: "Benefits rise with inflation", t: "choice",
+    opts: [[true, "Yes"], [false, "No"]] },
+  { k: "profile.hsa", g: "What you own", l: "HSA", t: "money" },
+
+  { k: "profile.currentAge", g: "What you own", l: "Age today", t: "num" },
+  { k: "profile.roth", g: "What you own", l: "Roth IRAs", t: "money" },
+  { k: "profile.ira", g: "What you own", l: "Traditional IRAs", t: "money" },
+  { k: "profile.k401", g: "What you own", l: "401(k)s", t: "money" },
+  { k: "profile.funds", g: "What you own", l: "Fund investments", t: "money" },
+  { k: "profile.vestedEquity", g: "What you own", l: "Vested equity", t: "money" },
+  { k: "profile.vestedCarry", g: "What you own", l: "Vested carry", t: "money" },
+  { k: "profile.cash", g: "What you own", l: "Cash", t: "money" },
+  { k: "profile.cashReserve", g: "What you own", l: "Cash held back as reserve", t: "money" },
+  { k: "assumptions.assetsOverride", g: "What you own", l: "Investable assets override", t: "money" },
+
+  { k: "assumptions.mortgageInSpend", g: "The house", l: "Mortgage payment in retirement budgets", t: "choice",
+    opts: [["included", "Already inside my budget"], ["added", "Add it from the schedule"]] },
+  { k: "profile.mortgagePayment", g: "The house", l: "Monthly payment", t: "money" },
+  { k: "profile.mortgageBalance", g: "The house", l: "Mortgage outstanding", t: "money" },
+  { k: "profile.mortgageRate", g: "The house", l: "Mortgage rate", t: "pct" },
+
+  { k: "assumptions.homeAppreciation", g: "The house", l: "Home appreciation", t: "pct" },
+  { k: "assumptions.homeValueCap", g: "The house", l: "Cap the home value at", t: "money" },
+  { k: "assumptions.sellHomeAge", g: "The house", l: "Sell or downsize at age", t: "num" },
+  { k: "assumptions.homeReleasePct", g: "The house", l: "Share of equity to the portfolio", t: "pct" },
+  { k: "profile.homeValue", g: "The house", l: "Home value", t: "money" },
+  { k: "assumptions.homeEquityOverride", g: "The house", l: "Home equity override", t: "money" },
+
+  { k: "profile.salary", g: "No effect on the projection", l: "Base salary", t: "money" },
+  { k: "profile.bonus", g: "No effect on the projection", l: "Expected bonus", t: "money" },
+  { k: "profile.raise", g: "No effect on the projection", l: "Expected annual raise", t: "pct" },
+  { k: "profile.dependents", g: "No effect on the projection", l: "Dependents", t: "num" },
+  { k: "profile.unvestedEquity", g: "No effect on the projection", l: "Unvested equity", t: "money" },
+  { k: "profile.unvestedCarry", g: "No effect on the projection", l: "Unvested carry", t: "money" },
+  { k: "profile.mortgageMaturityYear", g: "The house", l: "Mortgage matures in year", t: "year" },
+  { k: "profile.fiveTwoNine", g: "No effect on the projection", l: "529 accounts", t: "money" },
+];
+
+const FIELD_GROUPS = FIELDS.reduce((acc, f) => {
+  (acc[f.g] = acc[f.g] || []).push(f);
+  return acc;
+}, {});
+const FIELD_BY_KEY = FIELDS.reduce((acc, f) => { acc[f.k] = f; return acc; }, {});
+
+
+/* ============================================================
+   Styles — light
+   ============================================================ */
+const CSS = `
+.rp, .rp * { box-sizing: border-box; }
+.rp {
+  --paper:#F2F0EB; --card:#FFFFFF; --sunk:#FAF8F4; --tint:#F7F4ED;
+  --rule:#E4E0D7; --rule2:#CFC9BC;
+  --ink:#1E222A; --mid:#5C6472; --dim:#8A919E; --faint:#A9AFB9;
+  --brass:#9A7526; --brassbg:#F6EFDE;
+  --green:#1E7A5A; --greenbg:#E8F3EE;
+  --red:#B04A40; --redbg:#FBEDEB;
+  --blue:#3D6AA6; --violet:#6B5AA6;
+  background:var(--paper); color:var(--ink);
+  height:100vh; height:100dvh; overflow:hidden;
+  padding:calc(12px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right))
+          calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
+  display:flex; flex-direction:column; gap:10px;
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+  font-size:13.5px; line-height:1.5; font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+.rp .fig { font-family: ui-serif, "Iowan Old Style", Georgia, serif; letter-spacing:-0.01em; }
+.rp button, .rp input, .rp select { font-family: inherit; font-size: inherit; color: inherit; }
+.rp button { cursor: pointer; }
+.rp :focus-visible { outline:2px solid var(--brass); outline-offset:1px; border-radius:4px; }
+
+/* header */
+.hd { display:flex; align-items:center; gap:12px; flex-wrap:wrap; flex:0 0 auto; }
+.hd h1 { font-size:16px; font-weight:600; margin:0; letter-spacing:-0.01em; }
+.hd .sub { color:var(--faint); font-size:11.5px; }
+.hd .right { margin-left:auto; display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+
+/* verdict */
+.verdict { background:var(--card); border:1px solid var(--rule); border-radius:12px;
+  padding:13px 18px; flex:0 0 auto; display:flex; align-items:center; gap:22px; flex-wrap:wrap; }
+.verdict .lead { font-size:15px; }
+.verdict .lead .big { font-size:26px; }
+.verdict .stats { margin-left:auto; display:flex; gap:24px; flex-wrap:wrap; }
+.verdict .stat .k { font-size:10.5px; color:var(--faint); letter-spacing:0.02em; }
+.verdict .stat .v { font-size:16px; margin-top:1px; }
+.verdict .stat .v2 { font-size:11.5px; margin-top:1px; }
+
+/* panes */
+.split { flex:1 1 auto; min-height:0; display:grid;
+  grid-template-columns: minmax(0,0.82fr) minmax(0,1.18fr); gap:12px; }
+.pane { background:var(--card); border:1px solid var(--rule); border-radius:12px;
+  display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.tabs { display:flex; background:var(--sunk); border-bottom:1px solid var(--rule);
+  overflow-x:auto; flex:0 0 auto; padding:0 4px; }
+.tab { padding:9px 13px; background:none; border:none; color:var(--dim); font-size:12.5px;
+  border-bottom:2px solid transparent; white-space:nowrap; margin-bottom:-1px; }
+.tab:hover { color:var(--ink); }
+.tab.on { color:var(--ink); font-weight:600; border-bottom-color:var(--brass); }
+.body { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; padding:4px 16px 24px; }
+
+@media (max-width: 960px) {
+  .rp { height:auto; overflow:visible; }
+  .split { grid-template-columns:1fr; }
+  .body { overflow:visible; }
+}
+
+/* collapsible groups */
+.grp { border-bottom:1px solid var(--rule); }
+.grp:last-child { border-bottom:none; }
+.grph { display:flex; align-items:center; gap:9px; width:100%; background:none; border:none;
+  padding:11px 2px; text-align:left; }
+.grph .ttl { font-size:12.5px; font-weight:600; color:var(--ink); }
+.grph .sum { margin-left:auto; color:var(--dim); font-size:12px; }
+.grph .chev { color:var(--faint); font-size:10px; width:10px; transition:transform .15s; }
+.grph.open .chev { transform:rotate(90deg); }
+.grph:hover { background:var(--sunk); }
+.grpb { padding:2px 0 14px; }
+.lead-in { color:var(--dim); font-size:11.5px; padding:0 0 8px; }
+
+.hdr { font-size:10.5px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase;
+  color:var(--brass); padding:16px 0 6px; }
+
+/* rows */
+.r { display:flex; align-items:center; gap:10px; padding:5px 0; }
+.r + .r { border-top:1px solid #F0EDE6; }
+.r .lb { flex:1; color:var(--mid); font-size:12.5px; min-width:0; }
+.r .hint { color:var(--faint); font-size:11px; display:block; margin-top:1px; }
+.r .vl { flex:0 0 auto; }
+
+.inp { background:var(--sunk); border:1px solid var(--rule2); border-radius:6px; padding:5px 8px;
+  color:var(--ink); width:120px; text-align:right; }
+.inp:hover { border-color:var(--brass); }
+.inp:disabled { opacity:.45; }
+.inp.sm { width:78px; } .inp.xs { width:56px; }
+.inp.txt { text-align:left; width:100%; }
+.inp.sel { text-align:left; width:112px; padding:5px 4px; }
+.ta { width:100%; background:var(--sunk); border:1px solid var(--rule2); border-radius:8px;
+  padding:10px 12px; color:var(--ink); font-family:inherit; font-size:13.5px; line-height:1.6;
+  resize:vertical; }
+.ta:hover, .ta:focus { border-color:var(--brass); }
+.affix { display:inline-flex; align-items:center; gap:4px; color:var(--faint); font-size:12px; }
+
+.btn { background:var(--card); border:1px solid var(--rule2); color:var(--ink);
+  padding:5px 11px; border-radius:7px; font-size:12px; }
+.btn:hover { background:var(--sunk); border-color:var(--brass); }
+.btn.pri { background:var(--brass); border-color:var(--brass); color:#fff; font-weight:600; }
+.btn.pri:hover { background:#87661F; }
+.btn.gh { border-color:var(--rule); color:var(--mid); }
+.btn.sm { padding:3px 8px; font-size:11.5px; }
+.btn.dgr { color:var(--red); border-color:#EBD9D6; }
+
+.seg { display:inline-flex; border:1px solid var(--rule2); border-radius:7px; overflow:hidden; }
+.seg button { background:var(--card); border:none; padding:5px 11px; font-size:11.5px; color:var(--mid); }
+.seg button + button { border-left:1px solid var(--rule); }
+.seg button.on { background:var(--brassbg); color:var(--brass); font-weight:600; }
+
+.warnbox { background:#FFF6EC; border:1px solid #E8C79A; border-radius:9px;
+  padding:2px 10px 8px; margin:2px 0 6px; }
+.warnbox .grph .ttl { color:#9A5B12; }
+.warnnote { color:#9A5B12; font-size:11.5px; padding:6px 2px 2px; }
+.pos { color:var(--green); } .neg { color:var(--red); } .br { color:var(--brass); }
+.mut { color:var(--faint); }
+
+.card { background:var(--sunk); border:1px solid var(--rule); border-radius:10px; padding:12px 14px; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
+.card .k { font-size:10.5px; color:var(--faint); letter-spacing:0.02em; }
+.card .v { font-size:19px; margin-top:2px; }
+
+.note { color:var(--dim); font-size:11.5px; line-height:1.65; }
+.empty { color:var(--faint); font-size:12.5px; padding:20px 2px; }
+
+table.t { width:100%; border-collapse:collapse; font-size:11.5px; }
+table.t th { position:sticky; top:0; background:var(--tint); color:var(--mid); font-weight:600;
+  text-align:right; padding:7px 9px; border-bottom:1px solid var(--rule); white-space:nowrap; z-index:1; }
+table.t th:first-child, table.t td:first-child { text-align:left; }
+table.t td { text-align:right; padding:5px 9px; border-bottom:1px solid #F1EEE7; white-space:nowrap; }
+table.t tr.mk td { background:var(--brassbg); }
+table.t tr.bad td { background:var(--redbg); }
+table.t tr:hover td { background:var(--tint); }
+.scr { overflow:auto; max-height:58vh; border:1px solid var(--rule); border-radius:9px; }
+
+.pill { display:inline-block; font-size:10.5px; padding:1px 8px; border-radius:20px;
+  border:1px solid var(--rule2); color:var(--mid); }
+.pill.on { border-color:var(--brass); color:var(--brass); background:var(--brassbg); }
+.chk { display:inline-flex; align-items:center; gap:7px; color:var(--mid); font-size:12.5px; }
+.chk input { width:15px; height:15px; accent-color:var(--brass); }
+.dot { width:9px; height:9px; border-radius:2px; display:inline-block; }
+`;
+
+/* ============================================================
+   Primitives
+   ============================================================ */
+
+/* Inputs hold a local draft while focused and only push the value up on blur or
+   Enter. Escape abandons the edit. This keeps a keystroke from re-running the
+   whole projection and from remounting the field underneath the cursor. */
+function useDraft(value, onChange, format) {
+  const [draft, setDraft] = useState(null);
+  const display = draft != null ? draft : format(value);
+  const commit = () => {
+    if (draft == null) return;
+    onChange(draft);
+    setDraft(null);
+  };
+  const onKeyDown = (e) => {
+    if (e.key === "Enter") { commit(); e.target.blur(); }
+    if (e.key === "Escape") { setDraft(null); e.target.blur(); }
+  };
+  return { display, onChange: (e) => setDraft(e.target.value), onBlur: commit, onKeyDown };
+}
+
+function Num({ value, onChange, prefix, suffix, w = "", placeholder, disabled }) {
+  const d = useDraft(value, (s) => onChange(s.trim() === "" ? "" : n(s)),
+    (v) => (v === "" || v == null ? "" : Number(v).toLocaleString()));
+  return (
+    <span className="affix">
+      {prefix && <span>{prefix}</span>}
+      <input className={"inp " + w} inputMode="decimal" disabled={disabled} placeholder={placeholder}
+        value={d.display} onChange={d.onChange} onBlur={d.onBlur} onKeyDown={d.onKeyDown} />
+      {suffix && <span>{suffix}</span>}
+    </span>
+  );
+}
+
+function Pctf({ value, onChange, w = "sm" }) {
+  const d = useDraft(value, (s) => onChange(s.trim() === "" ? "" : n(s) / 100),
+    (v) => (v === "" || v == null ? "" : String(+(Number(v) * 100).toFixed(3))));
+  return (
+    <span className="affix">
+      <input className={"inp " + w} inputMode="decimal"
+        value={d.display} onChange={d.onChange} onBlur={d.onBlur} onKeyDown={d.onKeyDown} />
+      <span>%</span>
+    </span>
+  );
+}
+
+function YearNum({ value, onChange, w = "xs", placeholder }) {
+  const d = useDraft(value, (s) => onChange(s.trim() === "" ? "" : n(s)),
+    (v) => (v === "" || v == null ? "" : String(v)));
+  return (
+    <input className={"inp " + w} inputMode="numeric" placeholder={placeholder}
+      value={d.display} onChange={d.onChange} onBlur={d.onBlur} onKeyDown={d.onKeyDown} />
+  );
+}
+
+function Txt({ value, onChange, placeholder, style, w = "inp txt" }) {
+  const d = useDraft(value, onChange, (v) => v ?? "");
+  return (
+    <input className={w} style={style} placeholder={placeholder}
+      value={d.display} onChange={d.onChange} onBlur={d.onBlur} onKeyDown={d.onKeyDown} />
+  );
+}
+
+/* Older saved plans predate some of these tables, so always render a full set of
+   rows rather than however many happen to be stored. */
+function padRows(list, count, blank) {
+  const out = (list || []).map((x) => ({ id: x.id || uid(), ...blank, ...x })).slice(0, count);
+  while (out.length < count) out.push({ id: uid(), ...blank });
+  return out;
+}
+
+/* A saved plan may predate one of these tables entirely, so top every list back up
+   to its full length once at load rather than at render — otherwise the row indexes
+   and the stored array drift apart. */
+function normalize(st) {
+  const pr = { ...DEFAULT_PROFILE, ...(st.profile || {}) };
+  const as = { ...DEFAULT_ASSUMPTIONS, ...(st.assumptions || {}) };
+  pr.vesting = padRows(pr.vesting, 10, { label: "", amount: "", year: "", prob: 100 });
+  as.cashInflows = padRows(as.cashInflows, 10, { label: "", amount: "", year: "", pct: 100 });
+  as.oneOffs = padRows(as.oneOffs, 10, { label: "", amount: "", age: "" });
+  as.extras = padRows(as.extras, 6, { label: "", amount: "", year: "", dest: "portfolio" });
+  return { ...DEFAULT_STATE, ...st, profile: pr, assumptions: as,
+    ui: { ...DEFAULT_STATE.ui, ...(st.ui || {}) },
+    stress: { ...DEFAULT_STATE.stress, ...(st.stress || {}) } };
+}
+
+function Area2({ value, onChange, placeholder, rows = 10 }) {
+  const d = useDraft(value, onChange, (v) => v ?? "");
+  return (
+    <textarea className="ta" rows={rows} placeholder={placeholder}
+      value={d.display} onChange={d.onChange} onBlur={d.onBlur} />
+  );
+}
+
+const R = ({ label, hint, children }) => (
+  <div className="r">
+    <label className="lb">{label}{hint && <span className="hint">{hint}</span>}</label>
+    <div className="vl">{children}</div>
+  </div>
+);
+
+const H = ({ children }) => <div className="hdr">{children}</div>;
+
+function Group({ id, title, summary, open, toggle, children, lead, warn, warnNote }) {
+  return (
+    <div className={"grp" + (warn ? " warnbox" : "")}>
+      <button className={"grph" + (open ? " open" : "")} onClick={() => toggle(id)}>
+        <span className="chev">▶</span>
+        <span className="ttl">{title}</span>
+        {!open && summary != null && <span className="sum">{summary}</span>}
+        {warn && <span className="sum" style={{ color: "#9A5B12", marginLeft: 8 }}>check</span>}
+      </button>
+      {open && (
+        <div className="grpb">
+          {warn && warnNote && <div className="warnnote">{warnNote}</div>}
+          {lead && <div className="lead-in">{lead}</div>}
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   Inputs
+   ============================================================ */
+
+function InputsTab({ state, setA, setP, proj, open, toggle }) {
+  const a = state.assumptions, p = state.profile, bs = proj.bs;
+  const derivedAssets = a.assetsOverride === "" || a.assetsOverride == null;
+
+  return (
+    <>
+      <H>The six that matter</H>
+      <R label="Age today"><Num value={p.currentAge} onChange={(v) => setP({ currentAge: v })} w="xs" /></R>
+      <R label="Investable assets today"
+        hint={derivedAssets ? `Adds up from your accounts — ${money(bs.investable)}` : "Overriding the total from your accounts"}>
+        <Num value={a.assetsOverride} onChange={(v) => setA({ assetsOverride: v })}
+          prefix="$" placeholder={String(Math.round(bs.investable))} />
+      </R>
+      <R label="Saving each year" hint={`Growing ${pct(n(a.contributionGrowth))} a year until you retire`}>
+        <Num value={a.annualContribution} onChange={(v) => setA({ annualContribution: v })} prefix="$" />
+      </R>
+      <R label="Retiring at" hint={`In ${Math.max(0, n(a.retirementAge) - n(p.currentAge))} years, ${CY + n(a.retirementAge) - n(p.currentAge)}`}>
+        <Num value={a.retirementAge} onChange={(v) => setA({ retirementAge: v })} w="xs" />
+      </R>
+      <R label="Spending each year then"
+        hint={proj.budgetARate == null ? null
+          : `${pct(proj.budgetARate)} of the portfolio at ${proj.budgetAAge} · ${pct(proj.budgetADraw)} actually withdrawn`}>
+        <Num value={a.budgetA.amount} onChange={(v) => setA({ budgetA: { ...a.budgetA, amount: v } })} prefix="$" />
+      </R>
+      <R label="Growth after inflation"
+        hint={`${pct(n(a.preReturn))} before and ${pct(n(a.postReturn))} after retirement, less ${pct(n(a.inflation))} inflation`}>
+        <span className="affix fig" style={{ fontSize: 15 }}>{pct(proj.realPostReturn)}</span>
+      </R>
+
+      <div style={{ height: 14 }} />
+
+      <Group id="returns" title="Growth, inflation and tax" open={open.returns} toggle={toggle}
+        summary={`${pct(n(a.preReturn), 0)} / ${pct(n(a.postReturn), 0)} / ${pct(n(a.inflation))}`}>
+        <R label="Return before retirement"><Pctf value={a.preReturn} onChange={(v) => setA({ preReturn: v })} /></R>
+        <R label="Return after retirement"><Pctf value={a.postReturn} onChange={(v) => setA({ postReturn: v })} /></R>
+        <R label="Inflation"><Pctf value={a.inflation} onChange={(v) => setA({ inflation: v })} /></R>
+        <R label="Advisor fee starts in" hint="Blank means no fee is ever charged">
+          <YearNum value={a.advisorFeeFrom} w="sm" onChange={(v) => setA({ advisorFeeFrom: v })} /></R>
+        <R label="Advisor fee"
+          hint={proj.advisorFeeOn
+            ? `Comes straight off the return from ${proj.advisorFeeFrom}, so you earn ${pct(n(a.preReturn) - n(a.advisorFee))} before retirement. ${money(proj.cumAdvisorFee)} over the plan.`
+            : "Charged on the balance each year and netted out of the return"}>
+          <Pctf value={a.advisorFee} onChange={(v) => setA({ advisorFee: v })} /></R>
+        <R label="Contributions grow by"><Pctf value={a.contributionGrowth} onChange={(v) => setA({ contributionGrowth: v })} /></R>
+        <R label="Step contributions down at some point"
+          hint={a.contribStepDown ? "Growth stops and the flat amount below applies from that year on" : "Leave off to keep growing at the rate above until you retire"}>
+          <div className="seg">
+            <button className={!a.contribStepDown ? "on" : ""} onClick={() => setA({ contribStepDown: false })}>No</button>
+            <button className={a.contribStepDown ? "on" : ""} onClick={() => setA({ contribStepDown: true })}>Yes</button>
+          </div>
+        </R>
+        {a.contribStepDown && <>
+          <R label="Step down starting in"
+            hint={n(a.contribStepYear) > 0 ? `You'd be ${n(p.currentAge) + (n(a.contribStepYear) - CY)}` : "Four digits"}>
+            <YearNum value={a.contribStepYear} w="sm" onChange={(v) => setA({ contribStepYear: v })} /></R>
+          <R label="Contributions step down to" hint="Flat from that year until you retire">
+            <Num value={a.contribStepTo} prefix="$" onChange={(v) => setA({ contribStepTo: v })} /></R>
+        </>}
+        <R label="How tax is modelled"
+          hint={proj.byAccount
+            ? "Withdrawals come from taxable first, then 401(k)/IRA, then HSA and Roth. Your budgets are treated as living costs and tax is added on top."
+            : "One blended rate across everything, with no distinction between account types."}>
+          <div className="seg">
+            <button className={!proj.byAccount ? "on" : ""} onClick={() => setA({ taxMode: "simple" })}>Blended</button>
+            <button className={proj.byAccount ? "on" : ""} onClick={() => setA({ taxMode: "byAccount" })}>By account</button>
+          </div>
+        </R>
+        {proj.byAccount && <>
+          <R label="Ordinary income rate" hint="Applied to 401(k) and traditional IRA withdrawals">
+            <Pctf value={a.ordinaryTaxRate} onChange={(v) => setA({ ordinaryTaxRate: v })} /></R>
+          <R label="Capital gains rate" hint="Applied to the gain portion of a taxable sale only">
+            <Pctf value={a.capGainsRate} onChange={(v) => setA({ capGainsRate: v })} /></R>
+          <R label="Cost basis share of taxable accounts"
+            hint={`At ${pct(n(a.taxableBasisShare), 0)}, ${pct(1 - n(a.taxableBasisShare), 0)} of a sale today is taxable gain`}>
+            <Pctf value={a.taxableBasisShare} onChange={(v) => setA({ taxableBasisShare: v })} /></R>
+          <R label="Lifetime tax paid" hint="Across every withdrawal in the plan">
+            <span className="affix fig neg">{money(proj.cumTax)}</span></R>
+        </>}
+        {proj.byAccount && <>
+          <div className="lead-in" style={{ paddingTop: 10 }}>Where each year's saving lands. Anything left over goes to a taxable account.</div>
+          <R label="To 401(k) and traditional IRA" hint="Taxed as ordinary income when drawn">
+            <Pctf value={a.contribToDeferred} onChange={(v) => setA({ contribToDeferred: v })} /></R>
+          <R label="To Roth" hint="Never taxed again"><Pctf value={a.contribToRoth} onChange={(v) => setA({ contribToRoth: v })} /></R>
+          <R label="To HSA" hint="Tax-free in, tax-free out for medical costs">
+            <Pctf value={a.contribToHSA} onChange={(v) => setA({ contribToHSA: v })} /></R>
+          <R label="To taxable" hint="The remainder; only the gain is taxed on sale">
+            <span className="affix fig">{pct(Math.max(0, 1 - n(a.contribToDeferred) - n(a.contribToRoth) - n(a.contribToHSA)))}</span></R>
+        </>}
+        <R label="Spending figures are"
+          hint={proj.spendIsGross ? "Your budgets already include the tax you'll owe" : "Tax is added on top of your budgets"}>
+          <div className="seg">
+            <button className={proj.spendIsGross ? "on" : ""} onClick={() => setA({ spendBasis: "gross" })}>Gross</button>
+            <button className={!proj.spendIsGross ? "on" : ""} onClick={() => setA({ spendBasis: "net" })}>Net</button>
+          </div>
+        </R>
+        <R label="Tax rate on withdrawals"
+          hint={proj.byAccount ? "Not in use — tax is worked out account by account"
+            : proj.spendIsGross ? "Not in use while spending is stated gross" : "Grosses up every withdrawal"}>
+          <Pctf value={a.effectiveTaxRate} onChange={(v) => setA({ effectiveTaxRate: v })} /></R>
+      </Group>
+
+      <Group id="accounts" title="Accounts and assets" open={open.accounts} toggle={toggle}
+        summary={money(bs.investable)}
+        lead="What the projection draws down. Your cash reserve and 529s stay out of it.">
+        <R label="Roth IRAs" hint="Tax-free on the way out"><Num value={p.roth} onChange={(v) => setP({ roth: v })} prefix="$" /></R>
+        <R label="Traditional IRAs" hint="Ordinary income when drawn"><Num value={p.ira} onChange={(v) => setP({ ira: v })} prefix="$" /></R>
+        <R label="401(k)s" hint="Ordinary income when drawn"><Num value={p.k401} onChange={(v) => setP({ k401: v })} prefix="$" /></R>
+        <R label="HSA" hint="Tax-free in and out for medical costs; treated like Roth here">
+          <Num value={p.hsa} onChange={(v) => setP({ hsa: v })} prefix="$" /></R>
+        <R label="Fund investments" hint="Capital gains on the gain only"><Num value={p.funds} onChange={(v) => setP({ funds: v })} prefix="$" /></R>
+        <R label="Vested equity"><Num value={p.vestedEquity} onChange={(v) => setP({ vestedEquity: v })} prefix="$" /></R>
+        <R label="Vested carry"><Num value={p.vestedCarry} onChange={(v) => setP({ vestedCarry: v })} prefix="$" /></R>
+        <R label="Cash"><Num value={p.cash} onChange={(v) => setP({ cash: v })} prefix="$" /></R>
+        <R label="Held back as reserve" hint="Never drawn on"><Num value={p.cashReserve} onChange={(v) => setP({ cashReserve: v })} prefix="$" /></R>
+        <R label="529 accounts" hint="Earmarked, outside the plan"><Num value={p.fiveTwoNine} onChange={(v) => setP({ fiveTwoNine: v })} prefix="$" /></R>
+        <R label="Investable portfolio"><span className="affix fig br" style={{ fontSize: 15 }}>{money(bs.investable)}</span></R>
+      </Group>
+
+      <Group id="spend" title="Retirement spending" open={open.spend} toggle={toggle}
+        warn={!proj.spendInflates}
+        warnNote="Inflation is switched off for spending, so these budgets stay flat in future dollars. That understates what you'll need — deliberate only if you mean it."
+        summary={`${moneyShort(n(a.budgetA.amount))} then ${moneyShort(n(a.budgetB.amount))}`}
+        lead="Today's dollars, inflated to the year they're spent. Include housing until the mortgage clears, and healthcare before Medicare at 65.">
+        <R label="First phase — each year"
+          hint={proj.budgetARate == null ? null : `${pct(proj.budgetARate)} of the portfolio at ${proj.budgetAAge}`}>
+          <Num value={a.budgetA.amount} onChange={(v) => setA({ budgetA: { ...a.budgetA, amount: v } })} prefix="$" /></R>
+        <R label="First phase — for how long" hint={`Ages ${n(a.retirementAge)}–${n(a.retirementAge) + n(a.budgetA.years) - 1}`}>
+          <Num value={a.budgetA.years} onChange={(v) => setA({ budgetA: { ...a.budgetA, years: v } })} w="xs" /></R>
+        <R label="Second phase — each year"
+          hint={proj.budgetBRate == null ? "Starts after your plan ends" : `${pct(proj.budgetBRate)} of the portfolio at ${proj.budgetBAge}`}>
+          <Num value={a.budgetB.amount} onChange={(v) => setA({ budgetB: { ...a.budgetB, amount: v } })} prefix="$" /></R>
+        <R label="Second phase — for how long" hint="This rate carries on to the end either way">
+          <Num value={a.budgetB.years} onChange={(v) => setA({ budgetB: { ...a.budgetB, years: v } })} w="xs" /></R>
+        <R label="Grow spending with inflation"
+          hint={proj.spendInflates
+            ? `On — budgets rise ${pct(n(a.inflation))} a year, so ${money(n(a.budgetA.amount))} today is ${money(n(a.budgetA.amount) * Math.pow(1 + n(a.inflation), proj.retAge - proj.age0))} at ${proj.retAge}`
+            : "Off — budgets stay flat in the dollars of each year, which quietly cuts your real spending every year"}>
+          <div className="seg">
+            <button className={proj.spendInflates ? "on" : ""} onClick={() => setA({ spendInflates: true })}>On</button>
+            <button className={!proj.spendInflates ? "on" : ""} onClick={() => setA({ spendInflates: false })}>Off</button>
+          </div>
+        </R>
+        <R label="Plan through age"><Num value={a.deathAge} onChange={(v) => setA({ deathAge: v })} w="xs" /></R>
+        <R label="Leave to heirs" hint={`Stated in ${n(a.legacyGoalYear, CY)} dollars`}>
+          <Num value={a.legacyGoal} onChange={(v) => setA({ legacyGoal: v })} prefix="$" /></R>
+        <R label="In which year's dollars"
+          hint={`${money(n(a.legacyGoal))} in ${proj.goalYear} money is ${money(proj.goalNominal)} by ${proj.deathYear}`}>
+          <YearNum value={a.legacyGoalYear} w="sm" onChange={(v) => setA({ legacyGoalYear: v })} /></R>
+      </Group>
+
+      <Group id="ss" title="Social Security" open={open.ss} toggle={toggle}
+        warn={proj.ssCola && !proj.spendInflates}
+        warnNote="Benefits are growing with inflation while your spending is held flat. That combination flatters the plan from both directions at once — set them the same way unless you have a reason not to."
+        summary={`${moneyShort(proj.ss.annualAtClaim)}/yr from ${proj.ss.claimAge}`}
+        lead={`Every year from your first through retirement is assumed to hit the wage cap. You have ${proj.ss.yearsCredited}; the formula counts your best 35.`}>
+        <R label="Wait for full retirement age to claim">
+          <div className="seg">
+            <button className={a.waitForFRA ? "on" : ""} onClick={() => setA({ waitForFRA: true })}>Yes</button>
+            <button className={!a.waitForFRA ? "on" : ""} onClick={() => setA({ waitForFRA: false })}>No</button>
+          </div>
+        </R>
+        <R label="Claim at age" hint={a.waitForFRA ? "Ignored while you're waiting for FRA" : null}>
+          <Num value={a.waitForFRA ? a.fra : a.claimAge} disabled={!!a.waitForFRA} w="xs"
+            onChange={(v) => setA({ claimAge: v })} /></R>
+        <R label="Benefit in today's money" hint={`${pct(proj.ss.factor, 0)} of the full amount · covers ${pct(proj.ssCoverage, 0)} of your retirement spending`}>
+          <span className="affix fig">{money(proj.ss.annualAtClaim)}</span></R>
+        <R label="Grow the benefit with inflation"
+          hint={proj.ssCola
+            ? `On — the cost-of-living adjustment is applied, so the first cheque is worth ${money(proj.ss.annualAtClaim * Math.pow(1 + n(a.inflation), proj.ss.claimAge - n(p.currentAge)))} in the dollars of that year`
+            : "Off — the benefit is frozen in today's dollars, a deliberately pessimistic assumption"}>
+          <div className="seg">
+            <button className={proj.ssCola ? "on" : ""} onClick={() => setA({ ssCola: true })}>On</button>
+            <button className={!proj.ssCola ? "on" : ""} onClick={() => setA({ ssCola: false })}>Off</button>
+          </div>
+        </R>
+        <R label={`What you'd receive at ${proj.ss.claimAge}`}>
+          <span className="affix fig br" style={{ fontSize: 15 }}>
+            {money(proj.ss.annualAtClaim * (proj.ssCola ? Math.pow(1 + n(a.inflation), proj.ss.claimAge - n(p.currentAge)) : 1))}
+          </span></R>
+        <R label="First year you earned"><YearNum value={a.ssFirstYear} onChange={(v) => setA({ ssFirstYear: v })} w="sm" /></R>
+        <R label="Full retirement age"><Num value={a.fra} onChange={(v) => setA({ fra: v })} w="xs" /></R>
+        <R label="Taxable wage cap"><Num value={a.taxableMax} onChange={(v) => setA({ taxableMax: v })} prefix="$" /></R>
+        <R label="Share of benefit taxable" hint={proj.spendIsGross ? "Not in use while spending is stated gross" : null}>
+          <Pctf value={a.ssTaxablePortion} onChange={(v) => setA({ ssTaxablePortion: v })} /></R>
+      </Group>
+
+      <Group id="oneoff" title="One-off purchases" open={open.oneoff} toggle={toggle}
+        summary={(a.oneOffs || []).filter((o) => n(o.amount) > 0).length + " planned"}
+        lead="A wedding, a boat, a roof. Today's dollars, applied in the year you turn that age.">
+        {(a.oneOffs || []).map((o, i) => (
+          <div className="r" key={o.id}>
+            <Txt placeholder={`Item ${i + 1}`} value={o.label}
+              onChange={(t) => setA({ oneOffs: a.oneOffs.map((x, j) => j === i ? { ...x, label: t } : x) })} />
+            <div className="vl" style={{ display: "flex", gap: 6 }}>
+              <Num value={o.amount} prefix="$" w="sm"
+                onChange={(v) => setA({ oneOffs: a.oneOffs.map((x, j) => j === i ? { ...x, amount: v } : x) })} />
+              <Num value={o.age} prefix="age" w="xs"
+                onChange={(v) => setA({ oneOffs: a.oneOffs.map((x, j) => j === i ? { ...x, age: v } : x) })} />
+            </div>
+          </div>
+        ))}
+      </Group>
+
+      <Group id="vest" title="Vesting Equities" open={open.vest} toggle={toggle}
+        summary={`${moneyShort(proj.vestScheduled)} scheduled, ${moneyShort(proj.vestDirected)} invested`}
+        lead="Each tranche lands at the start of its year and earns a full year of return. The percentage is the share you actually put to work — the rest is assumed spent or lost to tax.">
+        <R label="Unvested equity"><Num value={p.unvestedEquity} onChange={(v) => setP({ unvestedEquity: v })} prefix="$" /></R>
+        <R label="Unvested carry"><Num value={p.unvestedCarry} onChange={(v) => setP({ unvestedCarry: v })} prefix="$" /></R>
+        <R label="Scheduled below"
+          hint={n(p.unvestedEquity) + n(p.unvestedCarry) - proj.vestScheduled > 1000
+            ? `${money(n(p.unvestedEquity) + n(p.unvestedCarry) - proj.vestScheduled)} still has no date`
+            : "All of it has a date"}>
+          <span className={"affix fig " + (n(p.unvestedEquity) + n(p.unvestedCarry) - proj.vestScheduled > 1000 ? "neg" : "pos")}>
+            {money(proj.vestScheduled)}</span></R>
+        <div className="lead-in" style={{ paddingTop: 10 }}>Label, amount, year, and the share invested.</div>
+        {(p.vesting || []).map((v, i) => (
+          <div className="r" key={v.id}>
+            <Txt placeholder={`Tranche ${i + 1}`} value={v.label}
+              onChange={(t) => setP({ vesting: p.vesting.map((x, j) => j === i ? { ...x, label: t } : x) })} />
+            <div className="vl" style={{ display: "flex", gap: 5 }}>
+              <Num value={v.amount} prefix="$" w="sm"
+                onChange={(val) => setP({ vesting: p.vesting.map((x, j) => j === i ? { ...x, amount: val } : x) })} />
+              <YearNum value={v.year} placeholder="yr" w="xs"
+                onChange={(val) => setP({ vesting: p.vesting.map((x, j) => j === i ? { ...x, year: val } : x) })} />
+              <Pctf value={(v.prob ?? 100) / 100} w="xs"
+                onChange={(val) => setP({ vesting: p.vesting.map((x, j) => j === i ? { ...x, prob: val * 100 } : x) })} />
+            </div>
+          </div>
+        ))}
+      </Group>
+
+      <Group id="inflow" title="One-Off Cash Inflows" open={open.inflow} toggle={toggle}
+        summary={`${moneyShort(proj.inflowScheduled)} scheduled, ${moneyShort(proj.inflowDirected)} invested`}
+        lead="Anything else arriving on a date you can name — an inheritance, a distribution, proceeds from a sale. The percentage is the share invested rather than spent.">
+        {(a.cashInflows || []).map((c, i) => (
+          <div className="r" key={c.id}>
+            <Txt placeholder={`Inflow ${i + 1}`} value={c.label}
+              onChange={(t) => setA({ cashInflows: a.cashInflows.map((x, j) => j === i ? { ...x, label: t } : x) })} />
+            <div className="vl" style={{ display: "flex", gap: 5 }}>
+              <Num value={c.amount} prefix="$" w="sm"
+                onChange={(val) => setA({ cashInflows: a.cashInflows.map((x, j) => j === i ? { ...x, amount: val } : x) })} />
+              <YearNum value={c.year} placeholder="yr" w="xs"
+                onChange={(val) => setA({ cashInflows: a.cashInflows.map((x, j) => j === i ? { ...x, year: val } : x) })} />
+              <Pctf value={(c.pct ?? 100) / 100} w="xs"
+                onChange={(val) => setA({ cashInflows: a.cashInflows.map((x, j) => j === i ? { ...x, pct: val * 100 } : x) })} />
+            </div>
+          </div>
+        ))}
+      </Group>
+
+      <Group id="house" title="The house and mortgage" open={open.house} toggle={toggle}
+        summary={proj.mortRetirementYears > 0
+          ? `${proj.mortRetirementYears} years of payments after you retire`
+          : money(bs.homeEquity) + " equity"}
+        lead="Home equity sits outside the drawdown and only reaches the portfolio if you sell. Worth setting once, not worth agonising over.">
+        <R label="Payments left when you retire"
+          hint={proj.mortPayoffAge != null ? `Final payment at ${proj.mortPayoffAge}, you retire at ${proj.retAge}` : "Never clears within the plan"}>
+          <span className={"affix fig " + (proj.mortRetirementYears > 0 ? "neg" : "pos")} style={{ fontSize: 15 }}>
+            {proj.mortRetirementYears > 0 ? `${proj.mortRetirementYears} years` : "none"}
+          </span>
+        </R>
+        <R label="Retirement budgets treat the payment as"
+          hint={proj.mortgageInSpend
+            ? `Budgets exclude it; the model adds ${money(proj.annualMortgagePayment)} a year while the loan runs, then stops`
+            : `Your budgets carry it — and keep carrying it after the loan clears at ${proj.mortPayoffAge}, which overstates your spending`}>
+          <div className="seg">
+            <button className={!proj.mortgageInSpend ? "on" : ""} onClick={() => setA({ mortgageInSpend: "included" })}>Inside</button>
+            <button className={proj.mortgageInSpend ? "on" : ""} onClick={() => setA({ mortgageInSpend: "added" })}>Added</button>
+          </div>
+        </R>
+        {!proj.mortgageInSpend && (
+          <div className="note" style={{ padding: "4px 0 8px" }}>
+            <b>Added</b> is the more accurate setting, but your budgets then need housing stripped out — about{" "}
+            {money(Math.max(0, n(a.budgetA.amount) - proj.annualMortgagePayment))} in place of {money(n(a.budgetA.amount))}.
+            In exchange, spending drops on its own the year the loan clears instead of staying flat to{" "}
+            {n(a.retirementAge) + n(a.budgetA.years) - 1}.
+          </div>
+        )}
+        {proj.mortgageInSpend && proj.mortRetirementDraw > 0 && (
+          <R label="Mortgage paid out of the portfolio" hint={`Over ${proj.mortRetirementYears} retirement years`}>
+            <span className="affix fig neg">{money(proj.mortRetirementDraw)}</span></R>
+        )}
+        <R label="Home value"><Num value={p.homeValue} onChange={(v) => setP({ homeValue: v })} prefix="$" /></R>
+        <R label="Mortgage outstanding"><Num value={p.mortgageBalance} onChange={(v) => setP({ mortgageBalance: v })} prefix="$" /></R>
+        <R label="Mortgage rate"><Pctf value={p.mortgageRate} onChange={(v) => setP({ mortgageRate: v })} /></R>
+        <R label="What sets the schedule"
+          hint={proj.byMaturity
+            ? "Maturity governs and the payment is derived, so the loan always clears on time."
+            : "Your entered payment governs, and the loan clears whenever it clears."}>
+          <div className="seg">
+            <button className={proj.byMaturity ? "on" : ""} onClick={() => setA({ mortgageDriver: "maturity" })}>Maturity</button>
+            <button className={!proj.byMaturity ? "on" : ""} onClick={() => setA({ mortgageDriver: "payment" })}>Payment</button>
+          </div>
+        </R>
+        <R label="Matures" hint="The date of the final payment. Reset both after a refinance.">
+          <span style={{ display: "inline-flex", gap: 6 }}>
+            <select className="inp sel" style={{ width: 104 }} value={n(p.mortgageMaturityMonth, 12)}
+              onChange={(e) => setP({ mortgageMaturityMonth: n(e.target.value) })}>
+              {["January","February","March","April","May","June","July","August","September","October","November","December"].map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+            </select>
+            <YearNum value={p.mortgageMaturityYear} w="sm" onChange={(v) => setP({ mortgageMaturityYear: v })} />
+          </span></R>
+        <R label="Payments remaining"
+          hint={`${proj.mortMonths} monthly payments from now, or ${(proj.mortMonths / 12).toFixed(1)} years`}>
+          <span className="affix fig">{proj.mortMonths}</span></R>
+        <R label="Final payment / mortgage-free"
+          hint={proj.mortPayoffAge != null
+            ? `Last payment in ${CY + proj.mortPayoffAge - proj.age0}, then nothing`
+            : "The loan never clears within the plan"}>
+          <span className="affix fig">
+            {proj.mortPayoffAge != null ? `age ${proj.mortPayoffAge} / free from ${proj.mortPayoffAge + 1}` : "\u2014"}
+          </span></R>
+        <R label="Monthly payment"
+          hint={proj.byMaturity
+            ? `Derived from the balance, rate and maturity. You entered ${money(n(p.mortgagePayment))}.`
+            : `At this payment the loan clears at ${proj.mortPayoffAge != null ? proj.mortPayoffAge : "never"}`}>
+          {proj.byMaturity
+            ? <span className="affix fig br">{money(proj.monthlyMortgagePayment)}</span>
+            : <Num value={p.mortgagePayment} onChange={(v) => setP({ mortgagePayment: v })} prefix="$" />}
+        </R>
+        <R label="Appreciation"><Pctf value={a.homeAppreciation} onChange={(v) => setA({ homeAppreciation: v })} /></R>
+        <R label="Cap the value at" hint="Blank lets it compound forever">
+          <Num value={a.homeValueCap} onChange={(v) => setA({ homeValueCap: v })} prefix="$" /></R>
+        <R label="Sell or downsize at age" hint="Blank holds it for life">
+          <Num value={a.sellHomeAge} onChange={(v) => setA({ sellHomeAge: v })} w="xs" /></R>
+        <R label="Share of equity to the portfolio"><Pctf value={a.homeReleasePct} onChange={(v) => setA({ homeReleasePct: v })} /></R>
+      </Group>
+    </>
+  );
+}
+
+/* ============================================================
+   Explore — levers, payments, annual worksheet
+   ============================================================ */
+
+const blankSheet = () => ({
+  income: Array.from({ length: 5 }, () => ({ id: uid(), label: "", amount: "" })),
+  buckets: Array.from({ length: 8 }, () => ({ id: uid(), label: "", amount: "", kind: "spend" })),
+});
+
+function growTo(amount, fromAge, toAge, retAge, preR, postR) {
+  let v = amount;
+  for (let age = Math.round(fromAge); age < Math.round(toAge); age++) v *= 1 + (age >= retAge ? postR : preR);
+  return v;
+}
+
+/* Defined at module scope. A component declared inside a render body gets a new
+   identity on every pass, which makes React unmount and remount it — and any
+   input inside loses focus mid-keystroke. */
+const Delta = ({ v }) => Math.abs(v) < 1
+  ? <span className="mut">no change</span>
+  : <span className={v > 0 ? "pos" : "neg"}>{(v > 0 ? "+" : "\u2212") + moneyShort(Math.abs(v))}</span>;
+
+function LeverValue({ f, value, set }) {
+  if (f.t === "choice") return (
+    <select className="inp sel" value={String(value)}
+      onChange={(e) => set(f.opts[0][0] === true ? e.target.value === "true" : e.target.value)}>
+      {f.opts.map(([val, lab]) => <option key={String(val)} value={String(val)}>{lab}</option>)}
+    </select>
+  );
+  if (f.t === "pct") return <Pctf value={value} onChange={set} />;
+  if (f.t === "year") return <YearNum value={value} w="sm" onChange={set} />;
+  if (f.t === "num") return <Num value={value} w="xs" onChange={set} />;
+  return <Num value={value} prefix="$" w="sm" onChange={set} />;
+}
+
+function Lever({ slot, lever, m, mBase, orig, accent, setLever, pick }) {
+  const f = FIELD_BY_KEY[lever.k];
+  const set = (v) => setLever(slot, { v });
+  const fmtV = (v) => {
+    if (!f) return "";
+    if (f.t === "choice") return (f.opts.find((o) => String(o[0]) === String(v)) || [, "\u2014"])[1];
+    if (v === "" || v == null) return "blank";
+    if (f.t === "pct") return pct(n(v));
+    if (f.t === "money") return money(n(v));
+    return String(v);
+  };
+  return (
+    <div className="card" style={{ marginTop: 9, borderLeft: `3px solid ${accent}` }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <select className="inp txt" style={{ flex: "1 1 160px", minWidth: 0 }}
+          value={lever.k} onChange={(e) => pick(slot, e.target.value)}>
+          <option value="">Choose a field\u2026</option>
+          {Object.entries(FIELD_GROUPS).map(([g, list]) => (
+            <optgroup key={g} label={g}>
+              {list.map((fd) => <option key={fd.k} value={fd.k}>{fd.l}</option>)}
+            </optgroup>
+          ))}
+        </select>
+        {f && <LeverValue f={f} value={lever.v} set={set} />}
+        {f && <button className="btn gh sm" onClick={() => set(orig)}>reset</button>}
+      </div>
+      {f && m && (
+        <>
+          <div className="note" style={{ marginTop: 7 }}>{fmtV(orig)} \u2192 <span className="br">{fmtV(lever.v)}</span></div>
+          <div style={{ display: "flex", gap: 22, marginTop: 8, flexWrap: "wrap" }}>
+            <div><div className="k">At {m.retAge}</div>
+              <div className="fig" style={{ fontSize: 17 }}>{moneyShort(m.atRet)}</div>
+              <div style={{ fontSize: 11 }}><Delta v={m.atRet - mBase.atRet} /></div></div>
+            <div><div className="k">At {m.deathAge}</div>
+              <div className="fig" style={{ fontSize: 17 }}>{moneyShort(m.atDeath)}</div>
+              <div style={{ fontSize: 11 }}><Delta v={m.atDeath - mBase.atDeath} /></div></div>
+            <div><div className="k">Runs dry</div>
+              <div className={"fig " + (m.dry ? "neg" : "pos")} style={{ fontSize: 17 }}>{m.dry || "never"}</div>
+              <div style={{ fontSize: 11 }} className="mut">
+                {m.dry === mBase.dry ? "unchanged" : mBase.dry ? `was ${mBase.dry}` : "was never"}</div></div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ExploreTab({ state, setA, setState, proj, open, toggle }) {
+  const a = state.assumptions, p = state.profile;
+  const base = { profile: p, assumptions: a };
+
+  /* Lever state is scratch, so it lives here rather than in saved state. Keeping it
+     local removes the stale-closure bugs that made this tab misbehave. */
+  const [lv, setLv] = useState({ a: { k: "", v: null }, b: { k: "", v: null } });
+  const setLever = (slot, patch) => setLv((s) => ({ ...s, [slot]: { ...s[slot], ...patch } }));
+  const pick = (slot, key) => setLever(slot, { k: key, v: key ? pathGet(base, key) : null });
+
+  const metrics = (pr) => ({
+    atRet: pr.portfolioAtRetirement, atDeath: pr.terminalPortfolio,
+    dry: pr.depletionAge, retAge: pr.retAge, deathAge: pr.deathAge,
+  });
+  const mBase = metrics(proj);
+  const runLever = (l) => {
+    if (!l.k) return null;
+    const st = pathSet(base, l.k, l.v);
+    return project(st.profile, st.assumptions);
+  };
+  const projA = runLever(lv.a), projB = runLever(lv.b);
+  let bothSt = base;
+  if (lv.a.k) bothSt = pathSet(bothSt, lv.a.k, lv.a.v);
+  if (lv.b.k) bothSt = pathSet(bothSt, lv.b.k, lv.b.v);
+  const projBoth = lv.a.k && lv.b.k ? project(bothSt.profile, bothSt.assumptions) : null;
+
+  const extras = a.extras || [];
+  const setExtra = (i, patch) => setA({ extras: extras.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
+  const anyExtras = extras.some((x) => n(x.amount) > 0 && n(x.year) > 0);
+  const allTo = (dest) => extras.map((x) => (n(x.amount) ? { ...x, dest } : x));
+  const routes = [
+    { k: "asis", nm: "As entered", pr: proj },
+    { k: "port", nm: "All to investments", pr: project(p, { ...a, extras: allTo("portfolio") }) },
+    { k: "mort", nm: "All to mortgage", pr: project(p, { ...a, extras: allTo("mortgage") }) },
+  ];
+
+  const annual = state.annual || { year: CY, sheets: {} };
+  const yr = n(annual.year, CY);
+  const sheet = annual.sheets[yr] || blankSheet();
+  const setAnnual = (patch) => setState((s) => ({ ...s, annual: { ...(s.annual || { year: CY, sheets: {} }), ...patch } }));
+  const setSheet = (patch) => setState((s) => {
+    const an = s.annual || { year: CY, sheets: {} }; const y = n(an.year, CY);
+    return { ...s, annual: { ...an, sheets: { ...an.sheets, [y]: { ...(an.sheets[y] || blankSheet()), ...patch } } } };
+  });
+  const ageY = n(p.currentAge) + (yr - CY);
+  const atRetV = (amt) => growTo(amt, ageY, proj.retAge, proj.retAge, n(a.preReturn), n(a.postReturn));
+  const atDeathV = (amt) => growTo(amt, ageY, proj.deathAge, proj.retAge, n(a.preReturn), n(a.postReturn));
+  const income = sheet.income.reduce((s, r) => s + n(r.amount), 0);
+  const invested = sheet.buckets.filter((b) => b.kind === "investment").reduce((s, b) => s + n(b.amount), 0);
+  const spentB = sheet.buckets.filter((b) => b.kind === "spend").reduce((s, b) => s + n(b.amount), 0);
+  const leftOver = income - invested - spentB;
+  const filledYears = Object.keys(annual.sheets).map(Number).sort((x, y) => x - y);
+
+  return (
+    <>
+      <H>One decision at a time</H>
+      <div className="note" style={{ paddingBottom: 4 }}>
+        Change any field without touching your actual inputs. Baseline is {moneyShort(mBase.atRet)} at {mBase.retAge} and{" "}
+        {moneyShort(mBase.atDeath)} at {mBase.deathAge}, in the dollars of those years.
+      </div>
+      <Lever slot="a" lever={lv.a} m={projA ? metrics(projA) : null} mBase={mBase}
+        orig={lv.a.k ? pathGet(base, lv.a.k) : null} accent="#9A7526" setLever={setLever} pick={pick} />
+      <Lever slot="b" lever={lv.b} m={projB ? metrics(projB) : null} mBase={mBase}
+        orig={lv.b.k ? pathGet(base, lv.b.k) : null} accent="#3D6AA6" setLever={setLever} pick={pick} />
+      {projBoth && (
+        <div className="card" style={{ marginTop: 9, borderLeft: "3px solid #1E7A5A" }}>
+          <div className="k">Both together</div>
+          <div style={{ display: "flex", gap: 22, marginTop: 5, flexWrap: "wrap" }}>
+            <div><div className="k">At {proj.retAge}</div>
+              <div className="fig" style={{ fontSize: 17 }}>{moneyShort(metrics(projBoth).atRet)}</div>
+              <div style={{ fontSize: 11 }}><Delta v={metrics(projBoth).atRet - mBase.atRet} /></div></div>
+            <div><div className="k">At {proj.deathAge}</div>
+              <div className="fig" style={{ fontSize: 17 }}>{moneyShort(metrics(projBoth).atDeath)}</div>
+              <div style={{ fontSize: 11 }}><Delta v={metrics(projBoth).atDeath - mBase.atDeath} /></div></div>
+          </div>
+          <div className="note" style={{ marginTop: 6 }}>
+            {(() => {
+              const both = metrics(projBoth).atDeath - mBase.atDeath;
+              const sum = (projA ? metrics(projA).atDeath - mBase.atDeath : 0) + (projB ? metrics(projB).atDeath - mBase.atDeath : 0);
+              const diff = both - sum;
+              return Math.abs(both) < 1 || Math.abs(diff) < Math.abs(both) * 0.02
+                ? "The two are close to additive."
+                : `Together they're worth ${moneyShort(Math.abs(diff))} ${diff > 0 ? "more" : "less"} than separately — they compound on each other.`;
+            })()}
+          </div>
+        </div>
+      )}
+
+      <div style={{ height: 16 }} />
+
+      <Group id="pay" title="One-off payments" open={open.pay} toggle={toggle}
+        summary={extras.filter((x) => n(x.amount) > 0).length + " entered"}
+        lead="Lump sums from outside — a bonus, a distribution, a sale. Send each to investments or at the mortgage.">
+        {extras.map((e, i) => (
+          <div className="r" key={e.id}>
+            <Txt placeholder={`Payment ${i + 1}`} value={e.label} onChange={(t) => setExtra(i, { label: t })} />
+            <div className="vl" style={{ display: "flex", gap: 5 }}>
+              <Num value={e.amount} prefix="$" w="sm" onChange={(v) => setExtra(i, { amount: v })} />
+              <YearNum value={e.year} placeholder="yr" w="xs" onChange={(v) => setExtra(i, { year: v })} />
+              <select className="inp sel" value={e.dest} onChange={(ev) => setExtra(i, { dest: ev.target.value })}>
+                <option value="portfolio">investments</option>
+                <option value="mortgage">mortgage</option>
+              </select>
+            </div>
+          </div>
+        ))}
+        {anyExtras && (
+          <>
+            <div className="scr" style={{ maxHeight: "none", marginTop: 10 }}>
+              <table className="t">
+                <thead><tr><th>Route it</th><th>At {proj.retAge}</th><th>At {proj.deathAge}</th><th>Interest saved</th></tr></thead>
+                <tbody>
+                  {routes.map((v) => (
+                    <tr key={v.k}>
+                      <td>{v.nm}</td>
+                      <td>{moneyShort(v.pr.portfolioAtRetirement)}</td>
+                      <td className="fig">{moneyShort(v.pr.terminalPortfolio)}</td>
+                      <td className={v.pr.interestSaved > 0 ? "pos" : "mut"}>
+                        {v.pr.interestSaved > 0 ? moneyShort(v.pr.interestSaved) : "\u2014"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="note" style={{ marginTop: 8 }}>
+              Your mortgage payment isn't a portfolio outflow, so interest you avoid can't show up in the portfolio
+              figure. Investments compound at {pct(n(a.postReturn))} and might not; the mortgage returns a certain{" "}
+              {pct(n(p.mortgageRate))}.
+            </div>
+          </>
+        )}
+      </Group>
+
+      <Group id="annual" title="Year worksheet" open={open.annual} toggle={toggle}
+        summary={filledYears.length ? filledYears.length + " years mapped" : "none yet"}
+        lead="Map one year's income into buckets you name. A scratch pad — nothing here feeds the projection.">
+        <R label="Planning for" hint={`You'd be ${ageY}${ageY >= proj.retAge ? ", retired" : ""}`}>
+          <YearNum value={annual.year} w="sm" onChange={(v) => setAnnual({ year: v })} /></R>
+        {filledYears.length > 0 && (
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", padding: "6px 0" }}>
+            {filledYears.map((y) => (
+              <button key={y} className={"btn sm " + (y === yr ? "pri" : "gh")} onClick={() => setAnnual({ year: y })}>{y}</button>
+            ))}
+          </div>
+        )}
+        <div className="lead-in" style={{ paddingTop: 8 }}>Coming in</div>
+        {sheet.income.map((r, i) => (
+          <div className="r" key={r.id}>
+            <Txt placeholder={i === 0 ? "Salary" : i === 1 ? "Bonus" : `Source ${i + 1}`} value={r.label}
+              onChange={(t) => setSheet({ income: sheet.income.map((x, j) => j === i ? { ...x, label: t } : x) })} />
+            <div className="vl"><Num value={r.amount} prefix="$"
+              onChange={(v) => setSheet({ income: sheet.income.map((x, j) => j === i ? { ...x, amount: v } : x) })} /></div>
+          </div>
+        ))}
+        <R label="Total"><span className="affix fig br">{money(income)}</span></R>
+        <div className="lead-in" style={{ paddingTop: 10 }}>Where it goes</div>
+        {sheet.buckets.map((b, i) => {
+          const amt = n(b.amount), isInv = b.kind === "investment";
+          return (
+            <div key={b.id} style={{ padding: "5px 0", borderTop: "1px solid #F0EDE6" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <Txt placeholder={`Bucket ${i + 1}`} value={b.label}
+                  onChange={(t) => setSheet({ buckets: sheet.buckets.map((x, j) => j === i ? { ...x, label: t } : x) })} />
+                <Num value={b.amount} prefix="$" w="sm"
+                  onChange={(v) => setSheet({ buckets: sheet.buckets.map((x, j) => j === i ? { ...x, amount: v } : x) })} />
+                <select className="inp sel" style={{ width: 96 }} value={b.kind}
+                  onChange={(e) => setSheet({ buckets: sheet.buckets.map((x, j) => j === i ? { ...x, kind: e.target.value } : x) })}>
+                  <option value="spend">spend</option><option value="investment">invest</option>
+                </select>
+              </div>
+              {isInv && amt > 0 && (
+                <div className="note" style={{ marginTop: 2 }}>
+                  becomes {ageY < proj.retAge && <><span className="pos">{money(atRetV(amt))}</span> at {proj.retAge} \u00b7 </>}
+                  <span className="pos">{money(atDeathV(amt))}</span> at {proj.deathAge}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <R label="To spend"><span className="affix fig">{money(spentB)}</span></R>
+        <R label="To investment"><span className="affix fig br">{money(invested)}</span></R>
+        <R label="Unallocated" hint={leftOver < -0.5 ? "More allocated than you have" : null}>
+          <span className={"affix fig " + (leftOver < -0.5 ? "neg" : Math.abs(leftOver) < 1 ? "pos" : "")}>{money(leftOver)}</span></R>
+      </Group>
+    </>
+  );
+}
+
+/* ============================================================
+   Outlook — chart and headline levers
+   ============================================================ */
+
+const SCOL = ["#3D6AA6", "#6B5AA6", "#B04A40"];
+
+function OutlookTab({ proj, state, real, compare, levers, view, setView }) {
+  const a = state.assumptions;
+  const adj = (v) => v;
+  const acts = state.actuals || {};
+
+  const data = proj.rows.map((r) => {
+    const o = { year: r.year, age: r.age, portfolio: Math.round(adj(r.eoy)) };
+    const act = acts[r.year];
+    if (act && act.portfolio !== "" && act.portfolio != null)
+      o.actual = Math.round(n(act.portfolio));
+    o.spend = Math.round(adj(r.spend + r.oneOff));
+    o.ss = Math.round(adj(r.ss));
+    o.draw = Math.round(adj(r.grossDraw));
+    compare.forEach((c, ci) => {
+      const cr = c.proj.rows.find((x) => x.year === r.year);
+      if (cr) o["s" + ci] = Math.round(cr.eoy);
+    });
+    return o;
+  });
+  const hasAct = data.some((d) => d.actual != null);
+
+  const axis = { fill: "#A9AFB9", fontSize: 11 };
+  const tip = {
+    contentStyle: { background: "#fff", border: "1px solid #CFC9BC", borderRadius: 9, fontSize: 12, boxShadow: "0 4px 14px rgba(0,0,0,.07)" },
+    labelStyle: { color: "#5C6472" },
+  };
+
+  return (
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0 4px" }}>
+        <div className="seg">
+          <button className={view === "balance" ? "on" : ""} onClick={() => setView("balance")}>Balance</button>
+          <button className={view === "flows" ? "on" : ""} onClick={() => setView("flows")}>Flows</button>
+        </div>
+        <span className="note">
+          {view === "balance" ? "What the portfolio is worth each year" : "What goes out and what Social Security covers"}
+        </span>
+      </div>
+
+      {!RC && <div className="note" style={{ padding: "10px 0" }}>
+        The charting library didn't load, so the graphs are hidden. Every number on the other tabs still works.
+      </div>}
+      <div style={{ height: RC ? 300 : 0 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <defs>
+              <linearGradient id="pf" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#9A7526" stopOpacity={0.22} />
+                <stop offset="100%" stopColor="#9A7526" stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid stroke="#EBE7DE" vertical={false} />
+            <XAxis dataKey="age" tick={axis} stroke="#E4E0D7" tickLine={false} minTickGap={28} />
+            <YAxis tickFormatter={moneyShort} tick={axis} stroke="#E4E0D7" tickLine={false} width={56} />
+            <Tooltip {...tip} labelFormatter={(v, pl) => `Age ${v}${pl && pl[0] ? ` · ${pl[0].payload.year}` : ""}`}
+              formatter={(v, nm) => [money(v), nm]} />
+            <ReferenceLine x={proj.retAge} stroke="#9A7526" strokeDasharray="3 4"
+              label={{ value: "retire", fill: "#9A7526", fontSize: 10, position: "insideTopLeft" }} />
+            {proj.depletionAge && <ReferenceLine x={proj.depletionAge} stroke="#B04A40" strokeDasharray="3 4"
+              label={{ value: "empty", fill: "#B04A40", fontSize: 10, position: "insideTopRight" }} />}
+
+            {view === "balance" && <Area type="monotone" dataKey="portfolio" name="Portfolio"
+              stroke="#9A7526" strokeWidth={2.2} fill="url(#pf)" dot={false} />}
+            {view === "balance" && compare.map((c, ci) => (
+              <Line key={c.id} type="monotone" dataKey={"s" + ci} name={c.name}
+                stroke={SCOL[ci % 3]} strokeWidth={1.5} strokeDasharray="5 3" dot={false} />
+            ))}
+            {view === "balance" && hasAct && <Line type="monotone" dataKey="actual" name="Actual"
+              stroke="#1E7A5A" strokeWidth={2.4} dot={{ r: 3, fill: "#1E7A5A" }} connectNulls />}
+
+            {view === "flows" && <Area type="monotone" dataKey="spend" name="Spending"
+              stroke="#B04A40" strokeWidth={2} fill="#FBEDEB" dot={false} />}
+            {view === "flows" && <Line type="monotone" dataKey="draw" name="From the portfolio"
+              stroke="#9A7526" strokeWidth={2} dot={false} />}
+            {view === "flows" && <Line type="monotone" dataKey="ss" name="Social Security"
+              stroke="#1E7A5A" strokeWidth={2} dot={false} />}
+            {(view === "flows" || compare.length > 0 || hasAct) &&
+              <Legend wrapperStyle={{ fontSize: 11, color: "#5C6472" }} iconType="plainline" iconSize={14} />}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="note" style={{ margin: "4px 0 14px" }}>
+        Dollars of the year shown. The Year by year tab restates the balance in {n(state.assumptions.baseYear, CY)} money.
+        {view === "balance" && proj.breakEvenAge && ` · the line turns back up at ${proj.breakEvenAge}, once Social Security carries part of the spending`}
+      </div>
+
+      <H>To reach your legacy goal</H>
+      <div className="cards">
+        <div className="card">
+          <div className="k">Save each year</div>
+          <div className="v fig">{levers.contribution == null ? "Out of reach" : money(levers.contribution)}</div>
+          <div className="note" style={{ marginTop: 3 }}>
+            {levers.contribution == null ? "No saving level gets there. Move retirement later or spend less."
+              : levers.contribution > n(a.annualContribution)
+                ? `${money(levers.contribution - n(a.annualContribution))} more than you're planning`
+                : `${money(n(a.annualContribution) - levers.contribution)} of room against your plan`}
+          </div>
+        </div>
+        <div className="card">
+          <div className="k">Or retire at</div>
+          <div className="v fig">{levers.retAge == null ? "Not reachable" : levers.retAge}</div>
+          <div className="note" style={{ marginTop: 3 }}>
+            {levers.retAge == null ? "Working to the end doesn't close it at this spending."
+              : levers.retAge > n(a.retirementAge) ? `${levers.retAge - n(a.retirementAge)} years later than planned`
+                : `${n(a.retirementAge) - levers.retAge} years earlier than planned`}
+          </div>
+        </div>
+        <div className="card">
+          <div className="k">Or earn</div>
+          <div className="v fig">{levers.ret == null ? "Above 20%" : pct(levers.ret)}</div>
+          <div className="note" style={{ marginTop: 3 }}>
+            {levers.ret == null ? "Implausible. The gap has to close elsewhere."
+              : `Before retirement, against the ${pct(n(a.preReturn))} you've assumed`}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ============================================================
+   Years
+   ============================================================ */
+
+function YearsTab({ proj, real, a, setA }) {
+  const [all, setAll] = useState(false);
+  const adj = (v) => v;
+  const g = proj.spendIsGross;
+  const c = (v) => (v ? moneyShort(v) : "—");
+  const bY = n(a.baseYear, CY);
+  const infl = n(a.inflation);
+  const buying = (r) => r.eoy / Math.pow(1 + infl, r.year - bY);
+  return (
+    <>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", flexWrap: "wrap" }}>
+        <div className="seg">
+          <button className={!all ? "on" : ""} onClick={() => setAll(false)}>Essentials</button>
+          <button className={all ? "on" : ""} onClick={() => setAll(true)}>Every column</button>
+        </div>
+        <span className="note">Buying power in</span>
+        <YearNum value={a.baseYear} w="sm" onChange={(v) => setA({ baseYear: v })} />
+        <span className="note">dollars</span>
+      </div>
+      <div className="note" style={{ paddingBottom: 8 }}>
+        {g ? "Withdrawal is what's left after Social Security — nothing is added for tax, since your budgets carry it."
+           : "Withdrawal is grossed up for tax on top of the net need."}
+        {" "}The last column restates each year's ending balance in {bY} money, so you can see what it would actually buy.
+      </div>
+      <div className="scr">
+        <table className="t">
+          <thead>
+            <tr>
+              <th>Year</th><th>Age</th><th>Start</th><th>Added</th>
+              {all && <><th>Vesting</th><th>Growth</th></>}
+              <th>Spend</th>
+              {all && <><th>One-off</th></>}
+              <th>Soc. Sec.</th>
+              {all && <><th>Net need</th>{!g && <th>Tax</th>}</>}
+              <th>Withdrawn</th><th>End</th>
+              {all && <th>Home</th>}
+              <th>Buying power</th>
+            </tr>
+          </thead>
+          <tbody>
+            {proj.rows.map((r) => (
+              <tr key={r.year} className={r.shortfall > 0 ? "bad" : r.age === proj.retAge ? "mk" : ""}>
+                <td>{r.year}</td><td>{r.age}</td>
+                <td>{c(adj(r.boy))}</td>
+                <td>{c(adj(r.inflows))}</td>
+                {all && <><td className="mut">{c(adj(r.vestGross))}</td><td>{c(adj(r.growth))}</td></>}
+                <td>{c(adj(r.spend))}</td>
+                {all && <td>{c(adj(r.oneOff))}</td>}
+                <td className={r.ssNet ? "pos" : ""}>{r.ssNet ? "\u2212" + moneyShort(adj(r.ssNet)) : "—"}</td>
+                {all && <><td>{c(adj(r.netNeed))}</td>{!g && <td>{c(adj(r.taxDrag))}</td>}</>}
+                <td className={r.grossDraw ? "neg" : ""}>{c(adj(r.grossDraw))}</td>
+                <td className="fig">{c(adj(r.eoy))}</td>
+                {all && <td className="mut">{c(adj(r.homeEq))}</td>}
+                <td className="fig br">{c(buying(r))}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+/* ============================================================
+   Stress
+   ============================================================ */
+
+const ANCHOR_LABEL = { "-3": "Crash 3 years before you retire", "0": "Crash the year you retire", "3": "Crash 3 years after you retire" };
+
+function StressTab({ result, cfg, setCfg, proj }) {
+  if (!result) return <div className="empty">Working…</div>;
+  const { runs, startYears, retAge, deathAge, age0, infl } = result;
+  const sums = [-3, 0, 3].map((x) => ({ anchor: x, s: summarize(runs, x) })).filter((x) => x.s);
+  const view = n(cfg.anchorView, 0);
+  const ages = proj.rows.map((r) => r.age);
+  const fan = fanData(runs, view, ages, infl, age0);
+  const planLine = proj.rows.map((r) => Math.round(r.eoy));
+  const merged = fan.map((f, i) => ({ ...f, plan: planLine[i] }));
+  const viewRuns = runs.filter((r) => r.anchor === view).slice()
+    .sort((x, y) => (x.depletionAge ?? 999) - (y.depletionAge ?? 999) || x.terminal - y.terminal);
+  const axis = { fill: "#A9AFB9", fontSize: 11 };
+
+  return (
+    <>
+      <div className="cards" style={{ marginTop: 12 }}>
+        {sums.map(({ anchor, s }) => (
+          <button key={anchor} onClick={() => setCfg({ anchorView: anchor })}
+            className="card" style={{
+              textAlign: "left", cursor: "pointer",
+              borderColor: anchor === view ? "#9A7526" : undefined,
+              background: anchor === view ? "#FDFBF6" : undefined,
+            }}>
+            <div className="k">{ANCHOR_LABEL[String(anchor)]}</div>
+            <div className="v fig">
+              <span className={s.rate >= 0.9 ? "pos" : s.rate >= 0.7 ? "br" : "neg"}>{pct(s.rate, 0)}</span>
+              <span className="note"> lasted</span>
+            </div>
+            <div className="note" style={{ marginTop: 3 }}>
+              {s.earliestDep ? <>Dry between {s.earliestDep} and {s.latestDep}</> : "None ran dry"}
+              {" · "}median {moneyShort(s.p50)} left
+            </div>
+            <div className="note">Worst {s.worst.startYear} — {s.worst.era}</div>
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "18px 0 2px", flexWrap: "wrap" }}>
+        <span className="hdr" style={{ padding: 0 }}>Charting</span>
+        <div className="seg">
+          {[-3, 0, 3].map((x) => (
+            <button key={x} className={view === x ? "on" : ""} onClick={() => setCfg({ anchorView: x })}>
+              {x === 0 ? "At retirement" : x < 0 ? "3 yrs before" : "3 yrs after"}
+            </button>
+          ))}
+        </div>
+        <span className="note">{ANCHOR_LABEL[String(view)]}</span>
+      </div>
+      <div style={{ height: 270 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={merged} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid stroke="#EBE7DE" vertical={false} />
+            <XAxis dataKey="age" tick={axis} stroke="#E4E0D7" tickLine={false} minTickGap={28} />
+            <YAxis tickFormatter={moneyShort} tick={axis} stroke="#E4E0D7" tickLine={false} width={56} />
+            <Tooltip contentStyle={{ background: "#fff", border: "1px solid #CFC9BC", borderRadius: 9, fontSize: 12 }}
+              labelFormatter={(v) => `Age ${v}`}
+              formatter={(v, nm) => [Array.isArray(v) ? `${money(v[0])} to ${money(v[1])}` : money(v), nm]} />
+            <Legend wrapperStyle={{ fontSize: 11, color: "#5C6472" }} iconType="plainline" iconSize={14} />
+            <ReferenceLine x={retAge} stroke="#9A7526" strokeDasharray="3 4" />
+            <Area dataKey="band" name="Middle 80% of history" stroke="none" fill="#3D6AA6" fillOpacity={0.13} />
+            <Line type="monotone" dataKey="worst" name="Worst sequence" stroke="#B04A40" strokeWidth={1.5} dot={false} />
+            <Line type="monotone" dataKey="median" name="Median" stroke="#1E7A5A" strokeWidth={2.2} dot={false} />
+            <Line type="monotone" dataKey="plan" name="Your smooth plan" stroke="#9A7526" strokeWidth={2} strokeDasharray="5 3" dot={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      <H>Glidepath</H>
+      <div className="note" style={{ paddingBottom: 6 }}>
+        Conventional practice holds a high equity share until roughly ten years out, cuts to about 60% by
+        retirement, and drifts to a floor near 35% in later life. Going much below 30% is generally treated as
+        counterproductive — it trades market risk for the risk of outliving the money.
+      </div>
+      <R label="Equity share to start" hint={`Held until the first step-down`}>
+        <Pctf value={cfg.equityShare} onChange={(v) => setCfg({ equityShare: v })} /></R>
+      {(cfg.steps || []).map((g, i) => (
+        <R key={g.id} label={`Step ${i + 1} — from age`}
+          hint={g.age === "" || g.age == null ? "Leave the age blank to skip this step"
+            : `${pct(equityAt(n(g.age), cfg))} equity from ${n(g.age)}, about ${pct(equityAt(n(g.age), cfg) * 0.0681 + (1 - equityAt(n(g.age), cfg)) * n(cfg.otherReal, 0.02))} real`}>
+          <span style={{ display: "inline-flex", gap: 6 }}>
+            <Num value={g.age} w="xs"
+              onChange={(v) => setCfg({ steps: cfg.steps.map((x, j) => j === i ? { ...x, age: v } : x) })} />
+            <Pctf value={g.pct}
+              onChange={(v) => setCfg({ steps: cfg.steps.map((x, j) => j === i ? { ...x, pct: v } : x) })} />
+          </span>
+        </R>
+      ))}
+      <R label="What the non-equity sleeve earns" hint="Real, after inflation. Long-run bonds and cash sit near 2%.">
+        <Pctf value={cfg.otherReal} onChange={(v) => setCfg({ otherReal: v })} /></R>
+      <div className="note" style={{ padding: "8px 0 2px" }}>
+        Equity at retirement is {pct(equityAt(proj.retAge, cfg))}, and {pct(equityAt(proj.deathAge, cfg))} at{" "}
+        {proj.deathAge}. The glidepath applies to this stress test only — the main projection still uses the flat
+        returns you entered, so a falling equity share here will not move the headline figures.
+      </div>
+
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", margin: "12px 0 6px", alignItems: "center" }}>
+        <div className="seg">
+          <button className={cfg.mode === "real" ? "on" : ""} onClick={() => setCfg({ mode: "real" })}>Inflation-matched</button>
+          <button className={cfg.mode === "nominal" ? "on" : ""} onClick={() => setCfg({ mode: "nominal" })}>Raw nominal</button>
+        </div>
+        <div className="seg">
+          <button className={cfg.window === "last70" ? "on" : ""} onClick={() => setCfg({ window: "last70" })}>Last 70</button>
+          <button className={cfg.window === "complete" ? "on" : ""} onClick={() => setCfg({ window: "complete" })}>Complete only</button>
+        </div>
+      </div>
+
+      <div className="scr" style={{ maxHeight: "38vh" }}>
+        <table className="t">
+          <thead><tr><th>Starts</th><th>Era</th><th>Runs dry</th><th>Portfolio at {deathAge}</th></tr></thead>
+          <tbody>
+            {viewRuns.map((r) => (
+              <tr key={r.startYear + ":" + r.anchor} className={r.depletionAge ? "bad" : ""}>
+                <td>{r.startYear}{r.wrapped && <span className="mut"> wrapped</span>}</td>
+                <td className="mut" style={{ textAlign: "right" }}>{r.era}</td>
+                <td className={r.depletionAge ? "neg" : "pos"}>{r.depletionAge ? `age ${r.depletionAge}` : "never"}</td>
+                <td className="fig">{moneyShort(r.terminal)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="note" style={{ marginTop: 10 }}>
+        {startYears.length} starting years × 3 timings, each replaying {SEQ_LEN} years of real S&amp;P 500 returns.
+        This is history, not probability — ninety-eight years holds about three independent thirty-year sequences, so
+        a 90% survival rate is not a 90% chance.
+      </div>
+    </>
+  );
+}
+
+/* ============================================================
+   Tracking — actuals and scenarios
+   ============================================================ */
+
+function flatten(obj, prefix = "", out = {}) {
+  Object.entries(obj || {}).forEach(([k, v]) => {
+    const key = prefix ? prefix + "." + k : k;
+    if (Array.isArray(v)) out[key] = JSON.stringify(v.map((x) => (x && x.id ? { ...x, id: undefined } : x)));
+    else if (v && typeof v === "object") flatten(v, key, out);
+    else out[key] = v;
+  });
+  return out;
+}
+const prettyKey = (k) => k.split(".").pop().replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
+function diffInputs(A, B) {
+  const fa = flatten(A), fb = flatten(B);
+  const out = [];
+  new Set([...Object.keys(fa), ...Object.keys(fb)]).forEach((k) => {
+    if (String(fa[k] ?? "") !== String(fb[k] ?? "")) out.push({ key: k, from: fa[k], to: fb[k] });
+  });
+  return out;
+}
+function fmtVal(v) {
+  if (v === "" || v == null) return "blank";
+  if (typeof v === "string" && v.startsWith("[")) return "list changed";
+  const num = Number(v);
+  if (!isFinite(num)) return String(v);
+  if (Math.abs(num) > 0 && Math.abs(num) < 1) return pct(num);
+  if (Math.abs(num) >= 1000) return money(num);
+  return String(num);
+}
+
+function TrackingTab({ state, setState, proj, baselineProj, compareIds, setCompareIds, open, toggle }) {
+  const [name, setName] = useState("");
+  const scenarios = state.scenarios || [];
+  const baseline = scenarios.find((s) => s.isBaseline);
+  const base = baselineProj || proj;
+
+  const rows = [];
+  const trackTo = CY + Math.max(0, 67 - n(state.profile.currentAge, 40));
+  for (let y = CY - 8; y <= trackTo; y++) {
+    rows.push({ year: y, planRow: base.rows.find((r) => r.year === y), act: (state.actuals || {})[y] || {} });
+  }
+  const setAct = (year, patch) =>
+    setState((s) => ({ ...s, actuals: { ...s.actuals, [year]: { ...(s.actuals || {})[year], ...patch } } }));
+
+  const recorded = rows.filter((r) => r.act.portfolio !== "" && r.act.portfolio != null && r.planRow);
+  const latest = recorded[recorded.length - 1];
+  const gap = latest ? n(latest.act.portfolio) - latest.planRow.eoy : null;
+
+  const snapshot = () => ({
+    profile: JSON.parse(JSON.stringify(state.profile)),
+    assumptions: JSON.parse(JSON.stringify(state.assumptions)),
+  });
+  const metricsOf = (snap) => {
+    const pr = project(snap.profile, snap.assumptions);
+    return { atRetirement: pr.portfolioAtRetirement, terminal: pr.terminalEstate, gap: pr.legacyGap,
+      depleted: pr.depletionAge, retAge: pr.retAge };
+  };
+  const save = () => {
+    const snap = snapshot();
+    setState((st) => ({ ...st, scenarios: [...(st.scenarios || []), {
+      id: uid(), name: name.trim() || `Scenario ${scenarios.length + 1}`, createdAt: new Date().toISOString(),
+      isBaseline: scenarios.length === 0, ...snap, metrics: metricsOf(snap) }] }));
+    setName("");
+  };
+  const load = (s) => setState((st) => ({ ...st,
+    profile: JSON.parse(JSON.stringify(s.profile)), assumptions: JSON.parse(JSON.stringify(s.assumptions)) }));
+  const promote = (s) => {
+    const prior = scenarios.find((x) => x.isBaseline);
+    const changes = prior ? diffInputs({ profile: prior.profile, assumptions: prior.assumptions },
+      { profile: s.profile, assumptions: s.assumptions }) : [];
+    setState((st) => ({ ...st,
+      scenarios: st.scenarios.map((x) => ({ ...x, isBaseline: x.id === s.id })),
+      ledger: [...(st.ledger || []), { id: uid(), at: new Date().toISOString(), name: s.name,
+        from: prior ? prior.name : null, metrics: s.metrics || metricsOf(s), changes: changes.slice(0, 10) }] }));
+  };
+  const toggleCmp = (id) => setCompareIds((ids) =>
+    ids.includes(id) ? ids.filter((x) => x !== id) : ids.length >= 3 ? ids : [...ids, id]);
+  const drift = baseline ? diffInputs({ profile: baseline.profile, assumptions: baseline.assumptions },
+    { profile: state.profile, assumptions: state.assumptions }) : [];
+
+  return (
+    <>
+      <H>Where you actually are</H>
+      <div className="card" style={{ marginTop: 4 }}>
+        <div className="k">Latest check-in vs {baselineProj ? "your plan of record" : "the plan you're editing"}</div>
+        <div className="v fig">{latest ? money(n(latest.act.portfolio)) : "—"}</div>
+        <div className={"note " + (gap == null ? "" : gap >= 0 ? "pos" : "neg")} style={{ marginTop: 2 }}>
+          {gap == null ? "Enter a balance below to start tracking."
+            : `${gap >= 0 ? "Ahead by" : "Behind by"} ${money(Math.abs(gap))} at end of ${latest.year}`}
+          {!baselineProj && " · save a scenario as your plan of record to freeze the target"}
+        </div>
+      </div>
+
+      <div className="scr" style={{ maxHeight: "34vh", marginTop: 12 }}>
+        <table className="t">
+          <thead><tr><th>Year</th><th>Plan</th><th>Actual</th><th>Variance</th><th>Note</th></tr></thead>
+          <tbody>
+            {rows.map(({ year, planRow, act }) => {
+              const plan = planRow ? planRow.eoy : null;
+              const actual = act.portfolio === "" || act.portfolio == null ? null : n(act.portfolio);
+              const v = plan != null && actual != null ? actual - plan : null;
+              return (
+                <tr key={year} className={year === CY ? "mk" : ""}>
+                  <td>{year}{year === CY && <span className="mut"> now</span>}</td>
+                  <td className="fig">{plan != null ? moneyShort(plan) : "—"}</td>
+                  <td><Num value={act.portfolio ?? ""} prefix="$" w="sm" onChange={(val) => setAct(year, { portfolio: val })} /></td>
+                  <td className={v == null ? "" : v >= 0 ? "pos" : "neg"}>
+                    {v == null ? "—" : (v >= 0 ? "+" : "\u2212") + moneyShort(Math.abs(v))}</td>
+                  <td style={{ textAlign: "left" }}>
+                    <Txt style={{ minWidth: 130 }} placeholder="What happened"
+                      value={act.note ?? ""} onChange={(t) => setAct(year, { note: t })} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ height: 14 }} />
+
+      <Group id="scen" title="Scenarios" open={open.scen} toggle={toggle}
+        summary={scenarios.length ? `${scenarios.length} saved` : "none yet"}
+        lead="What you're editing is a sandbox. Saving freezes a copy; one becomes your plan of record, and your actuals are measured against it.">
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <input className="inp txt" placeholder="Name this version" value={name} onChange={(e) => setName(e.target.value)} />
+          <button className="btn pri" onClick={save}>Save</button>
+        </div>
+        {baseline && drift.length > 0 && (
+          <div className="note" style={{ marginBottom: 8 }}>
+            {drift.length} change{drift.length > 1 ? "s" : ""} from “{baseline.name}”:{" "}
+            {drift.slice(0, 4).map((d) => `${prettyKey(d.key)} ${fmtVal(d.from)}→${fmtVal(d.to)}`).join(" · ")}
+            {drift.length > 4 && ` and ${drift.length - 4} more`}
+          </div>
+        )}
+        {scenarios.length === 0 ? (
+          <div className="empty">Set your assumptions the way you expect things to go, then save it as your plan of record.</div>
+        ) : (
+          <div className="scr" style={{ maxHeight: "30vh" }}>
+            <table className="t">
+              <thead><tr><th>Scenario</th><th>Retire</th><th>Estate</th><th>vs goal</th><th>Dry</th><th></th></tr></thead>
+              <tbody>
+                {scenarios.map((s) => {
+                  const m = s.metrics || metricsOf(s);
+                  return (
+                    <tr key={s.id}>
+                      <td>
+                        <label className="chk">
+                          <input type="checkbox" checked={compareIds.includes(s.id)} onChange={() => toggleCmp(s.id)} />
+                          <span>{s.name} {s.isBaseline && <span className="pill on">plan of record</span>}</span>
+                        </label>
+                      </td>
+                      <td>{m.retAge}</td>
+                      <td className="fig">{moneyShort(m.terminal)}</td>
+                      <td className={m.gap >= 0 ? "pos" : "neg"}>
+                        {(m.gap >= 0 ? "+" : "\u2212") + moneyShort(Math.abs(m.gap))}</td>
+                      <td className={m.depleted ? "neg" : "pos"}>{m.depleted || "never"}</td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        <button className="btn gh sm" onClick={() => load(s)}>Open</button>{" "}
+                        {!s.isBaseline && <button className="btn gh sm" onClick={() => promote(s)}>Make plan</button>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {compareIds.length > 0 && (
+          <div className="note" style={{ marginTop: 8 }}>
+            {compareIds.map((id, i) => {
+              const s = scenarios.find((x) => x.id === id);
+              return s ? <span key={id} style={{ marginRight: 12 }}>
+                <span className="dot" style={{ background: SCOL[i % 3] }} /> {s.name}</span> : null;
+            })} drawn on the Outlook chart.
+          </div>
+        )}
+      </Group>
+
+      <Group id="ledger" title="How the plan has changed" open={open.ledger} toggle={toggle}
+        summary={(state.ledger || []).length ? `${state.ledger.length} entries` : "no history"}>
+        {(state.ledger || []).length === 0 ? (
+          <div className="empty">Each time you adopt a new plan of record, what changed and what it did lands here.</div>
+        ) : [...state.ledger].reverse().map((e) => (
+          <div className="card" key={e.id} style={{ marginTop: 8 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+              <strong>{e.name}</strong>
+              {e.from && <span className="note">replaced “{e.from}”</span>}
+              <span className="note" style={{ marginLeft: "auto" }}>{new Date(e.at).toLocaleDateString()}</span>
+            </div>
+            <div className="note" style={{ marginTop: 4 }}>
+              Retire {e.metrics.retAge} · estate {moneyShort(e.metrics.terminal)} ·{" "}
+              <span className={e.metrics.gap >= 0 ? "pos" : "neg"}>
+                {e.metrics.gap >= 0 ? "clears" : "misses"} the goal by {moneyShort(Math.abs(e.metrics.gap))}</span>
+            </div>
+            {e.changes && e.changes.length > 0 && (
+              <div className="note" style={{ marginTop: 4 }}>
+                {e.changes.map((c) => `${prettyKey(c.key)} ${fmtVal(c.from)}→${fmtVal(c.to)}`).join(" · ")}
+              </div>
+            )}
+          </div>
+        ))}
+      </Group>
+
+      <Group id="method" title="What the model assumes" open={open.method} toggle={toggle}
+        summary="tax, Social Security, what's excluded">
+        <MethodBody state={state} proj={proj} />
+      </Group>
+    </>
+  );
+}
+
+/* ============================================================
+   Notes
+   ============================================================ */
+
+function NotesTab({ state, setState, proj }) {
+  const notes = state.notes || { goals: "", log: "" };
+  const set = (patch) => setState((s) => ({ ...s, notes: { ...(s.notes || {}), ...patch } }));
+  const stamp = () => {
+    const d = new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+    set({ log: `${d}\n\n${notes.log || ""}` });
+  };
+  const words = (notes.log || "").trim() ? (notes.log || "").trim().split(/\s+/).length : 0;
+
+  return (
+    <>
+      <H>Goals</H>
+      <div className="note" style={{ paddingBottom: 8 }}>
+        What you're actually trying to achieve, in your own words. The numbers drift; this is the thing to
+        check them against.
+      </div>
+      <Area2 value={notes.goals} rows={7} onChange={(t) => set({ goals: t })}
+        placeholder={"Retire at 64 without changing how we live.\nLeave enough that the kids aren't waiting on it.\nStop checking the balance every week."} />
+
+      <H>Lessons and decisions</H>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, paddingBottom: 8 }}>
+        <button className="btn sm" onClick={stamp}>Stamp today's date</button>
+        <span className="note">{words ? `${words.toLocaleString()} words` : "Newest at the top works best"}</span>
+      </div>
+      <Area2 value={notes.log} rows={18} onChange={(t) => set({ log: t })}
+        placeholder={"What you changed and why. What surprised you. What you got wrong last time.\n\nThe entries worth writing are the ones where you talked yourself out of something."} />
+
+      <div className="note" style={{ marginTop: 14 }}>
+        Saved with everything else on this device, and included in Backup. Nothing here reaches the
+        projection — it's for you, not the model.
+      </div>
+    </>
+  );
+}
+
+/* ============================================================
+   Method disclosure
+   ============================================================ */
+
+const Sect = ({ t, items }) => (
+  <>
+    <div className="lead-in" style={{ paddingTop: 12, color: "#9A7526", fontWeight: 600 }}>{t}</div>
+    {items.map(([k, v], i) => (
+      <div className="r" key={i}>
+        <span className="lb" style={{ flex: "0 0 33%" }}>{k}</span>
+        <span style={{ flex: 1, color: "#5C6472", fontSize: 12 }}>{v}</span>
+      </div>
+    ))}
+  </>
+);
+
+function MethodBody({ state, proj }) {
+  const a = state.assumptions, p = state.profile, g = proj.spendIsGross, ba = proj.byAccount;
+  return (
+    <>
+      <div className="note" style={{ paddingBottom: 6 }}>
+        Ordered by how much each choice moves the answer. The first four are worth arguing about; the rest are
+        housekeeping.
+      </div>
+
+      <Sect t="1 · Returns and inflation — the largest lever by far" items={[
+        ["Rates", `Flat ${pct(n(a.preReturn))} before retirement and ${pct(n(a.postReturn))} after, against ${pct(n(a.inflation))} inflation. No volatility; the stress test is where sequence risk lives.`],
+        ["Real return", `${pct(proj.realPostReturn)} in retirement. This single number decides whether the balance compounds or declines, and it is the difference between the plan working and not.`],
+        ["Fees", "Not deducted anywhere. Advisor and fund costs have to come out of your return assumption by hand."],
+      ]} />
+
+      <Sect t="2 · How tax is modelled" items={[
+        ["Current setting", ba
+          ? "By account type. Withdrawals come from taxable first (gain taxed at the capital gains rate), then 401(k) and IRA (ordinary income), then HSA and Roth, which come out clean."
+          : g ? "One blended rate, and your budgets are stated gross of tax — so the budget already carries the tax bill and nothing is added to withdrawals."
+              : "One blended rate added on top of budgets stated net of tax."],
+        ["Rates in use", ba ? `${pct(n(a.ordinaryTaxRate), 0)} ordinary, ${pct(n(a.capGainsRate), 0)} capital gains, with ${pct(n(a.taxableBasisShare), 0)} of taxable holdings treated as cost basis.`
+                            : `${pct(n(a.effectiveTaxRate), 0)} blended, applied uniformly.`],
+        ["The catch when switching", "Blended-gross and by-account mean different things by the same budget number. Gross budgets already contain your tax bill; by-account treats the budget as living costs and adds tax on top. Moving from one to the other without restating the budget will overstate or understate spending by the whole tax amount."],
+        ["Lifetime tax", ba ? `${money(proj.cumTax)} across the plan.` : "Not computed in blended-gross mode, because it is assumed to sit inside your spending figures."],
+        ["Not modelled", "Required minimum distributions after 73, bracket structure, the 2026 rate sunset, state tax unless it is inside your rate, and Roth conversions."],
+      ]} />
+
+      <Sect t="3 · Spending and the mortgage" items={[
+        ["Budgets", `${money(n(a.budgetA.amount))} for ${n(a.budgetA.years)} years from ${proj.retAge}, then ${money(n(a.budgetB.amount))} to the end. Today's dollars, inflated to the year spent.`],
+        ["Mortgage payment", proj.mortgageInSpend
+          ? `Added from the real amortisation schedule while the loan runs, then it stops. Fixed in nominal dollars, so unlike everything else it never inflates. ${proj.mortRetirementYears} years of it fall in retirement, costing ${money(proj.mortRetirementDraw)}.`
+          : `Assumed to sit inside your budgets — which then stay flat after the loan clears at ${proj.mortPayoffAge}, charging you for a mortgage you no longer have.`],
+        ["Behaviour", "Fixed budgets regardless of markets. Real retirees cut back in a downturn, so this is conservative."],
+      ]} />
+
+      <Sect t="4 · Social Security" items={[
+        ["Amount", `${money(proj.ss.annualAtClaim)} a year in today's money, claimed at ${proj.ss.claimAge}, covering ${pct(proj.ssCoverage, 0)} of retirement spending.`],
+        ["Cost of living", proj.ssCola ? `Grows with your ${pct(n(a.inflation))} inflation assumption, so the first cheque is ${money(proj.ss.annualAtClaim * Math.pow(1 + n(a.inflation), proj.ss.claimAge - n(p.currentAge)))} in the dollars of that year.`
+                                       : "Frozen in today's dollars — no cost-of-living adjustment. Deliberately pessimistic."],
+        ["Formula", `Standard PIA on current bend points ($${SS_DEFAULTS.bend1.toLocaleString()} and $${SS_DEFAULTS.bend2.toLocaleString()}), every year from ${n(a.ssFirstYear)} assumed at the ${money(n(a.taxableMax))} wage cap, best 35 counted. You have ${proj.ss.yearsCredited}.`],
+        ["Left out", "Wage indexing of past earnings, which understates the benefit. Spousal and survivor benefits. Any haircut for the trust fund shortfall projected for the mid-2030s."],
+      ]} />
+
+      <Sect t="5 · What reaches the portfolio" items={[
+        ["Vesting equities", `${money(proj.vestDirected)} of ${money(proj.vestScheduled)} scheduled, at the share set on each tranche. Lands at the start of its year and earns a full year of return.`],
+        ["Cash inflows", `${money(proj.inflowDirected)} of ${money(proj.inflowScheduled)} scheduled is invested; the rest is assumed spent.`],
+        ["Contributions", `${money(n(a.annualContribution))} this year, growing ${pct(n(a.contributionGrowth))} a year${a.contribStepDown && n(a.contribStepYear) ? `, stepping down to ${money(n(a.contribStepTo))} flat from ${n(a.contribStepYear)}` : ""}. Split ${pct(n(a.contribToDeferred), 0)} deferred, ${pct(n(a.contribToRoth), 0)} Roth, ${pct(n(a.contribToHSA), 0)} HSA, remainder taxable.`],
+        ["Never included", `Cash reserve of ${money(n(p.cashReserve))}, 529 balances of ${money(n(p.fiveTwoNine))}, and unvested holdings except through dated tranches. Salary and bonus reach nothing at all — Social Security assumes the wage cap every year, so income is not read by the model.`],
+      ]} />
+
+      <Sect t="6 · Timing conventions" items={[
+        ["Steps", "One year at a time. Vesting arrives at the start of its year and earns the full year; contributions, inflows and withdrawals are treated as spread through the year and earn about half."],
+        ["Dollars", `Every figure on screen is money of its own year. The buying power column on Year by year restates balances in ${n(a.baseYear, CY)} dollars.`],
+        ["Legacy goal", `${money(n(a.legacyGoal))} in today's money becomes ${money(proj.goalNominal)} by ${proj.deathAge} before being scored.`],
+      ]} />
+
+      <Sect t="7 · The house" items={[
+        ["Materiality", "Tested: removing the house entirely changes the portfolio at retirement, the drawdown and whether the money lasts by nothing at all. It moves only the estate figure."],
+        ["Mechanics", `Value grows ${pct(n(a.homeAppreciation))}${a.homeValueCap ? ` to a ceiling of ${money(n(a.homeValueCap))}` : " without limit"}; equity is value less the outstanding balance. ${a.sellHomeAge ? `Sold at ${n(a.sellHomeAge)} with ${pct(n(a.homeReleasePct), 0)} of equity moved into the portfolio.` : "Held for life."}`],
+        ["Excluded", "Maintenance, property tax and insurance. Home equity never funds spending unless you sell."],
+      ]} />
+
+      <Sect t="8 · The mortgage question, settled" items={[
+        ["Before retirement", `Do not pay it down. ${pct(n(a.preReturn))} in the market against a ${pct(n(p.mortgageRate))} loan, and diverted money compounds for decades. Tested at $25k, $50k and $75k a year from saving: all worse, the $50k case giving up about $2.1M at 95 to save $813k of interest.`],
+        ["At retirement", `Close to a tie. Post-retirement ${pct(n(a.postReturn))} sits below the ${pct(n(p.mortgageRate))} rate, so a lump payoff edges out investing by roughly $31k on an $8.5M portfolio — some of which is a timing convention, not economics.`],
+        ["The real argument", "The rate avoided is certain; the return expected is not. Within a point of each other, take the certain one."],
+      ]} />
+
+      <Sect t="9 · The stress test" items={[
+        ["Method", `${SEQ_LEN}-year runs of real S&P 500 total returns 1928–2025, three crash timings around retirement, blended with a non-equity sleeve at ${pct(n((state.stress || {}).otherReal, 0.06))} real.`],
+        ["Inflation handling", "Inflation-matched strips each year's actual CPI and re-applies your assumption. Raw nominal replays returns as printed and badly flatters the 1970s."],
+        ["Reading it", "History, not probability. Ninety-eight years holds about three independent thirty-year sequences, so a 90% survival rate is not a 90% chance."],
+      ]} />
+
+      <Sect t="10 · Absent entirely" items={[
+        ["Health and care", "No long-term care, medical shock or Medicare premium detail. One late-life care event can exceed everything else in the plan."],
+        ["Longevity", `Stops at ${proj.deathAge}. No probability of living longer, no annuity or pooled risk.`],
+        ["Household", "One person. No spouse's income, accounts, benefits or lifespan."],
+        ["Employment", "Continuous earnings to retirement. No job loss, sabbatical or disability."],
+      ]} />
+
+      <div className="note" style={{ marginTop: 14 }}>
+        A planning model, not advice. Its value is showing which assumptions your conclusion rests on.
+      </div>
+    </>
+  );
+}
+
+/* ============================================================
+   App
+   ============================================================ */
+
+/* RetireMint mark — Meridian. A struck disc crossed by a rising band that runs the
+   full width and is cropped by the circle, so the movement continues past the frame.
+   Identical geometry to the icon set, so the two never drift apart. */
+const Logo = ({ size = 26 }) => (
+  <svg width={size} height={size} viewBox="0 0 40 40" aria-label="RetireMint" role="img"
+    style={{ flex: "0 0 auto", display: "block" }}>
+    <defs><clipPath id="meridianClip"><circle cx="20.00" cy="20.00" r="15.20"/></clipPath></defs><circle cx="20.00" cy="20.00" r="15.20" fill="#DDEBE2"/><path d="M2.40 26.20 L2.63 26.21 L3.00 26.20 L3.40 26.18 L3.82 26.14 L4.24 26.09 L4.68 26.03 L5.12 25.96 L5.56 25.89 L6.01 25.80 L6.46 25.71 L6.92 25.61 L7.37 25.50 L7.83 25.38 L8.30 25.26 L8.76 25.13 L9.23 25.00 L9.69 24.86 L10.16 24.71 L10.63 24.56 L11.11 24.40 L11.58 24.23 L12.06 24.07 L12.53 23.89 L13.01 23.71 L13.49 23.52 L13.97 23.33 L14.45 23.14 L14.93 22.94 L15.41 22.73 L15.89 22.52 L16.38 22.30 L16.86 22.08 L17.35 21.86 L17.83 21.63 L18.32 21.40 L18.81 21.16 L19.29 20.92 L19.78 20.67 L20.27 20.42 L20.76 20.16 L21.25 19.91 L21.74 19.64 L22.23 19.37 L22.72 19.10 L23.22 18.83 L23.71 18.55 L24.20 18.27 L24.70 17.98 L25.19 17.69 L25.68 17.39 L26.18 17.09 L26.67 16.79 L27.17 16.49 L27.66 16.18 L28.16 15.86 L28.66 15.55 L29.15 15.23 L29.65 14.90 L30.15 14.58 L30.64 14.24 L31.14 13.91 L31.64 13.57 L32.14 13.23 L32.64 12.89 L33.14 12.54 L33.64 12.19 L34.14 11.83 L34.64 11.47 L35.14 11.11 L35.64 10.75 L36.14 10.38 L36.64 10.01 L38.56 12.39 L38.09 12.81 L37.61 13.22 L37.13 13.64 L36.65 14.05 L36.18 14.45 L35.70 14.86 L35.22 15.26 L34.74 15.65 L34.26 16.05 L33.78 16.44 L33.30 16.83 L32.82 17.22 L32.34 17.60 L31.86 17.98 L31.38 18.35 L30.90 18.73 L30.42 19.10 L29.94 19.46 L29.45 19.83 L28.97 20.19 L28.49 20.54 L28.01 20.90 L27.52 21.25 L27.04 21.59 L26.55 21.94 L26.07 22.27 L25.58 22.61 L25.10 22.94 L24.61 23.27 L24.12 23.60 L23.64 23.92 L23.15 24.24 L22.66 24.55 L22.17 24.86 L21.68 25.17 L21.19 25.47 L20.70 25.77 L20.21 26.07 L19.72 26.36 L19.23 26.65 L18.73 26.93 L18.24 27.21 L17.75 27.48 L17.25 27.75 L16.75 28.02 L16.26 28.28 L15.76 28.54 L15.26 28.79 L14.76 29.03 L14.26 29.28 L13.75 29.51 L13.25 29.75 L12.74 29.97 L12.24 30.20 L11.73 30.41 L11.22 30.63 L10.71 30.83 L10.19 31.03 L9.68 31.22 L9.16 31.41 L8.64 31.59 L8.12 31.77 L7.59 31.93 L7.06 32.09 L6.53 32.24 L5.99 32.39 L5.45 32.52 L4.89 32.64 L4.33 32.76 L3.75 32.86 L3.15 32.94 L2.40 33.00Z" fill="#9A7526" clip-path="url(#meridianClip)"/><circle cx="20.00" cy="20.00" r="15.20" fill="none" stroke="#1E7A5A" stroke-width="1.68"/>
+  </svg>
+);
+
+function App() {
+  const [state, setState] = useState(DEFAULT_STATE);
+  const [loaded, setLoaded] = useState(false);
+  const [status, setStatus] = useState("Loading…");
+  const [leftTab, setLeftTab] = useState("inputs");
+  const [rightTab, setRightTab] = useState("outlook");
+  const [chartView, setChartView] = useState("balance");
+  const [compareIds, setCompareIds] = useState([]);
+  const [open, setOpen] = useState({});
+  const toggle = (id) => setOpen((o) => ({ ...o, [id]: !o[id] }));
+  const first = useRef(true);
+  const latest = useRef(state);
+  const dirty = useRef(false);
+  useEffect(() => { latest.current = state; }, [state]);
+
+  const writeNow = async () => {
+    const res = persist(latest.current);
+    if (res.ok) { dirty.current = false; setStatus("Saved " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })); }
+    else setStatus("Not saved: " + res.error);
+  };
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const res = loadState();
+      if (!alive) return;
+      if (res.data) {
+        setState(normalize(res.data));
+        setStatus("Loaded");
+      } else setStatus(res.ok ? "New plan" : "Storage unavailable — copy a backup before leaving");
+      setLoaded(true);
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    if (first.current) { first.current = false; return; }
+    dirty.current = true;
+    setStatus("Saving…");
+    const t = setTimeout(() => { writeNow(); }, 500);
+    return () => clearTimeout(t);
+  }, [state, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const flush = () => { if (dirty.current) persist(latest.current); };
+    const onVis = () => { if (document.visibilityState === "hidden") flush(); };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVis);
+      flush();
+    };
+  }, [loaded]);
+
+  const setA = (patch) => setState((s) => ({ ...s, assumptions: { ...s.assumptions, ...patch } }));
+  const setP = (patch) => setState((s) => ({ ...s, profile: { ...s.profile, ...patch } }));
+
+  const proj = useMemo(() => project(state.profile, state.assumptions), [state.profile, state.assumptions]);
+  const levers = useMemo(() => ({
+    contribution: solveContribution(state.profile, state.assumptions),
+    retAge: solveRetirementAge(state.profile, state.assumptions),
+    ret: solveReturn(state.profile, state.assumptions),
+  }), [state.profile, state.assumptions]);
+
+  const baseline = (state.scenarios || []).find((s) => s.isBaseline);
+  const baselineProj = useMemo(() => (baseline ? project(baseline.profile, baseline.assumptions) : null), [baseline]);
+  const compare = useMemo(() => compareIds.map((id) => {
+    const s = (state.scenarios || []).find((x) => x.id === id);
+    return s ? { id, name: s.name, proj: project(s.profile, s.assumptions) } : null;
+  }).filter(Boolean), [compareIds, state.scenarios]);
+
+  const stressCfg = state.stress || DEFAULT_STATE.stress;
+  const setCfg = (patch) => setState((s) => ({ ...s, stress: { ...(s.stress || DEFAULT_STATE.stress), ...patch } }));
+  const stress = useMemo(() => rightTab !== "stress" ? null
+    : stressTest(state.profile, state.assumptions, { ...stressCfg, anchors: [-3, 0, 3] }),
+    [rightTab, state.profile, state.assumptions, stressCfg.equityShare, stressCfg.otherReal, stressCfg.mode, stressCfg.window]);
+
+  const real = false;   // all figures are shown in the dollars of their year
+  const dfEnd = Math.pow(1 + n(state.assumptions.inflation), proj.deathAge - proj.age0);
+  const dfRet = Math.pow(1 + n(state.assumptions.inflation), proj.retAge - proj.age0);
+  const show = (v) => v;
+  /* Second line on the headline stats: the same amount restated in the dollars of
+     the year your legacy goal is stated in, so the two are directly comparable. */
+  const inGoalYear = (v, atAge) =>
+    v / Math.pow(1 + n(state.assumptions.inflation), (CY + atAge - proj.age0) - proj.goalYear);
+  const gy = proj.goalYear;
+
+  const backup = async () => {
+    try { await navigator.clipboard.writeText(JSON.stringify(state)); setStatus("Backup copied"); }
+    catch (e) { setStatus("Couldn't reach the clipboard"); }
+  };
+  const restore = () => {
+    const txt = window.prompt("Paste a backup to replace everything:");
+    if (!txt) return;
+    try {
+      const d = JSON.parse(txt);
+      setState(normalize(d));
+      setStatus("Backup restored");
+    } catch (e) { setStatus("That wasn't a valid backup"); }
+  };
+
+  const lasts = !proj.depletionAge;
+  const leftOver = show(proj.terminalPortfolio, dfEnd);
+
+  return (
+    <div className="rp">
+      <style>{CSS}</style>
+
+      <div className="hd">
+        <Logo />
+        <h1 style={{ letterSpacing: "-0.02em" }}>{state.profile.name ? `${state.profile.name}'s plan` : "RetireMint"}</h1>
+        <span className="sub">{n(state.profile.currentAge)} today · retiring {proj.retAge} · through {proj.deathAge}</span>
+        <div className="right">
+          <button className="btn sm" onClick={writeNow}>Save</button>
+          <button className="btn gh sm" onClick={backup}>Backup</button>
+          <button className="btn gh sm" onClick={restore}>Restore</button>
+          <span className="note">{status}</span>
+        </div>
+      </div>
+
+      <div className="verdict">
+        <div className="lead">
+          {lasts ? <>Funded through {proj.deathAge}, with <span className="big fig pos">{moneyShort(proj.terminalPortfolio)}</span>{" "}
+                   <span className="fig br" style={{ fontSize: 15 }}>({moneyShort(inGoalYear(proj.terminalPortfolio, proj.deathAge))} in {gy}$)</span> left over</>
+                 : <>Runs out at <span className="big fig neg">{proj.depletionAge}</span>, {proj.deathAge - proj.depletionAge} years short</>}
+        </div>
+        <div className="stats">
+          <div className="stat"><div className="k">At retirement</div>
+            <div className="v fig">{moneyShort(proj.portfolioAtRetirement)}</div>
+            <div className="v2 fig br">{moneyShort(inGoalYear(proj.portfolioAtRetirement, proj.retAge))} in {gy}$</div></div>
+          <div className="stat"><div className="k">You withdraw</div>
+            <div className="v fig">{pct(proj.withdrawalRate)}</div></div>
+          <div className="stat"><div className="k">Portfolio earns</div>
+            <div className="v fig">{pct(proj.realPostReturn)}</div></div>
+          <div className="stat"><div className="k">Legacy goal</div>
+            <div className={"v fig " + (proj.legacyGap >= 0 ? "pos" : "neg")}>
+              {(proj.legacyGap >= 0 ? "+" : "\u2212") + moneyShort(Math.abs(proj.legacyGap))}</div>
+            <div className="v2 fig br">
+              {(proj.legacyGap >= 0 ? "+" : "\u2212") + moneyShort(Math.abs(inGoalYear(proj.legacyGap, proj.deathAge)))} in {gy}$</div></div>
+        </div>
+      </div>
+
+      <div className="split">
+        <div className="pane">
+          <div className="tabs">
+            <button className={"tab " + (leftTab === "inputs" ? "on" : "")} onClick={() => setLeftTab("inputs")}>Your plan</button>
+            <button className={"tab " + (leftTab === "explore" ? "on" : "")} onClick={() => setLeftTab("explore")}>Explore</button>
+          </div>
+          <div className="body">
+            {leftTab === "inputs" && <InputsTab state={state} setA={setA} setP={setP} proj={proj} open={open} toggle={toggle} />}
+            {leftTab === "explore" && <ExploreTab state={state} setA={setA} setState={setState} proj={proj} open={open} toggle={toggle} />}
+          </div>
+        </div>
+
+        <div className="pane">
+          <div className="tabs">
+            <button className={"tab " + (rightTab === "outlook" ? "on" : "")} onClick={() => setRightTab("outlook")}>Outlook</button>
+            <button className={"tab " + (rightTab === "years" ? "on" : "")} onClick={() => setRightTab("years")}>Year by year</button>
+            <button className={"tab " + (rightTab === "stress" ? "on" : "")} onClick={() => setRightTab("stress")}>Stress test</button>
+            <button className={"tab " + (rightTab === "track" ? "on" : "")} onClick={() => setRightTab("track")}>Tracking</button>
+            <button className={"tab " + (rightTab === "notes" ? "on" : "")} onClick={() => setRightTab("notes")}>Notes</button>
+          </div>
+          <div className="body">
+            {rightTab === "outlook" && <OutlookTab proj={proj} state={state} real={real} compare={compare}
+              levers={levers} view={chartView} setView={setChartView} />}
+            {rightTab === "years" && <YearsTab proj={proj} real={real} a={state.assumptions} setA={setA} />}
+            {rightTab === "stress" && <StressTab result={stress} cfg={stressCfg} setCfg={setCfg} proj={proj} />}
+            {rightTab === "notes" && <NotesTab state={state} setState={setState} proj={proj} />}
+            {rightTab === "track" && <TrackingTab state={state} setState={setState} proj={proj}
+              baselineProj={baselineProj} compareIds={compareIds} setCompareIds={setCompareIds}
+              open={open} toggle={toggle} />}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(React.createElement(App));
+
+</script>
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("sw.js").catch(function () {});
+    });
+  }
+</script>
+</body>
+</html>
